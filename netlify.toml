@@ -5,11 +5,9 @@
 [build.environment]
   NODE_VERSION = "18"
 
-# API routes redirect to Netlify Functions
-[[redirects]]
-  from = "/api/*"
-  to = "/.netlify/functions/:splat"
-  status = 200
+# Use Netlify's Next.js plugin for better compatibility
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
 
 # Handle client-side routing
 [[redirects]]
