@@ -16,7 +16,7 @@ export default function HomePage() {
   const router = useRouter();
 
   const handleDemo = () => {
-    router.push('/dashboard');
+    router.push('/demo');
   };
 
   const handleEarlyAccess = async (e: React.FormEvent) => {

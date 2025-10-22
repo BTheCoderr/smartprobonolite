@@ -180,7 +180,7 @@ export default function LoginPage() {
         <div className="text-center">
           <p className="text-sm text-gray-600 mb-2">Want to try without signing up?</p>
           <Link
-            href="/dashboard"
+            href="/demo"
             className="text-primary-600 hover:text-primary-700 text-sm font-medium"
           >
             Continue in Demo Mode →
