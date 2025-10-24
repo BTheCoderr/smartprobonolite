@@ -256,6 +256,9 @@ out/
 # Test coverage
 coverage/
 
+# Uploads directory
+uploads/
+
 # Misc
 *.tgz
 *.tar.gz

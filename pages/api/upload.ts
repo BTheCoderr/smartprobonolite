@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import formidable from 'formidable';
 import fs from 'fs';
+import path from 'path';
 import mammoth from 'mammoth';
 import pdf from 'pdf-parse';
 
@@ -30,9 +31,16 @@ export default async function handler(
   }
 
   try {
+    // Ensure upload directory exists
+    const uploadDir = path.join(process.cwd(), 'uploads');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
     const form = formidable({
       maxFileSize: 10 * 1024 * 1024, // 10MB
       keepExtensions: true,
+      uploadDir: uploadDir,
     });
 
     const [fields, files] = await new Promise<[formidable.Fields, formidable.Files]>(
@@ -82,9 +90,20 @@ export default async function handler(
     });
   } catch (error: any) {
     console.error('Upload API Error:', error);
+    console.error('Error stack:', error.stack);
+    
+    // Clean up any temp files if they exist
+    try {
+      if (error.filepath && fs.existsSync(error.filepath)) {
+        fs.unlinkSync(error.filepath);
+      }
+    } catch (cleanupError) {
+      console.error('Cleanup error:', cleanupError);
+    }
+    
     return res.status(500).json({
       error: 'Failed to process file upload',
-      details: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error',
     });
   }
 }
