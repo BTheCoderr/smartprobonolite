@@ -48,11 +48,13 @@ export default function ChatBox({ uploadedText, onOutputGenerated }: ChatBoxProp
     setLoading(true);
 
     try {
-      // Get auth token if available
-      const { data: { session } } = await supabase?.auth.getSession() || { data: { session: null } };
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (session?.access_token) {
-        headers['Authorization'] = `Bearer ${session.access_token}`;
+      // Get auth token if available (only if supabase is configured)
+      let headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (supabase) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          headers['Authorization'] = `Bearer ${session.access_token}`;
+        }
       }
 
       const response = await fetch('/api/chat', {
@@ -112,11 +114,13 @@ export default function ChatBox({ uploadedText, onOutputGenerated }: ChatBoxProp
     setMessages((prev) => [...prev, userMessage]);
 
     try {
-      // Get auth token if available
-      const { data: { session } } = await supabase?.auth.getSession() || { data: { session: null } };
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (session?.access_token) {
-        headers['Authorization'] = `Bearer ${session.access_token}`;
+      // Get auth token if available (only if supabase is configured)
+      let headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (supabase) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          headers['Authorization'] = `Bearer ${session.access_token}`;
+        }
       }
 
       const response = await fetch('/api/chat', {
