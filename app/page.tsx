@@ -109,8 +109,8 @@ export default function HomePage() {
               ))}
             </div>
             <div>
-              <p className="text-sm font-semibold text-gray-700">Trusted by 500+ attorneys</p>
-              <p className="text-xs text-gray-500">Join the legal tech revolution</p>
+              <p className="text-sm font-semibold text-gray-700">Backed by Rhode Island Legal Aid</p>
+              <p className="text-xs text-gray-500">Built for small law firms and legal aid</p>
             </div>
           </div>
         </div>
