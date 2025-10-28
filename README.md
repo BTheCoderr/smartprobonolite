@@ -4,6 +4,16 @@
 
 SmartProBono Lite is a Next.js application that helps small law firms and legal aid offices automate client intake and document drafting using AI. Built with modern web technologies and designed for real-world legal practice.
 
+## 🔗 Live Demo
+
+- **Demo (no data saved)**: https://smartprobonolite.netlify.app/demo
+- **Pilot Dashboard (auth + persistence)**: https://smartprobonolite.netlify.app/dashboard
+
+## 📚 Security & Pilot Docs
+
+- See [SECURITY_NOTE.md](./SECURITY_NOTE.md) for data handling, RLS, and env practices.
+- See [PILOT_GUIDE.md](./PILOT_GUIDE.md) for attorney instructions, disclaimers, and feedback loop.
+
 ## 🎯 Project Overview
 
 This project demonstrates the integration of AI technology in legal practice, specifically focusing on:
