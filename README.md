@@ -131,6 +131,11 @@ smartprobono-lite/
 
    # Email Service (Optional)
    RESEND_API_KEY=your_resend_api_key
+
+   # Analytics (Optional but recommended)
+    NEXT_PUBLIC_POSTHOG_KEY=your_posthog_public_key
+    NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
+    POSTHOG_SECRET_KEY=your_posthog_secret_key
    ```
 
 4. **Set up Supabase database**
@@ -160,6 +165,23 @@ All tables include Row Level Security (RLS) for data protection.
 ## 🔧 Configuration
 
 ### AI Provider Setup
+### Analytics (PostHog)
+
+PostHog is wired in for product analytics, funnels, and organization-level reporting. To enable it:
+
+1. Create a PostHog project (Cloud or self-hosted) and copy the **Project API Key** and **Host**.
+2. Add the `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_POSTHOG_HOST`, and `POSTHOG_SECRET_KEY` variables to `.env.local`.
+3. Deploy the same variables to Netlify/Vercel.
+
+Once configured, the app will automatically capture:
+
+- Demo and early access CTA clicks
+- Intake uploads (success/error)
+- Chat interactions and AI generations
+- Document downloads/copies
+- Supabase auth events (user + organization grouping)
+
+Custom events can be added anywhere via `captureEvent('event_name', { ...props })` from `@/lib/posthogClient`.
 The application supports multiple AI providers:
 
 1. **Groq (Recommended)**: Fast, free tier available

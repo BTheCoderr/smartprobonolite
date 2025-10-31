@@ -2,6 +2,7 @@
 
 import { useState, useRef } from 'react';
 import { validateFileType, formatFileSize } from '@/lib/utils/textExtraction';
+import { captureEvent } from '@/lib/posthogClient';
 
 interface FileUploaderProps {
   onFileUploaded: (text: string, fileName: string) => void;
@@ -27,6 +28,11 @@ export default function FileUploader({ onFileUploaded }: FileUploaderProps) {
     }
 
     setUploading(true);
+    captureEvent('intake_started', {
+      file_name: file.name,
+      file_type: file.type || file.name.split('.').pop()?.toLowerCase(),
+      file_size: file.size,
+    });
 
     try {
       const formData = new FormData();
@@ -44,9 +50,20 @@ export default function FileUploader({ onFileUploaded }: FileUploaderProps) {
       }
 
       onFileUploaded(data.extractedText, data.fileName);
+      captureEvent('intake_completed', {
+        file_name: data.fileName,
+        file_type: data.fileType,
+        file_size: data.fileSize,
+        text_length: data.extractedText?.length || 0,
+      });
     } catch (error: any) {
       console.error('Upload error:', error);
       setError(error.message || 'Failed to upload file');
+      captureEvent('intake_failed', {
+        message: error.message,
+        file_name: file.name,
+        file_type: file.type || file.name.split('.').pop()?.toLowerCase(),
+      });
     } finally {
       setUploading(false);
     }

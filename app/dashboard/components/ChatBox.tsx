@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import { captureEvent } from '@/lib/posthogClient';
 
 type Message = {
   role: 'user' | 'assistant';
@@ -52,6 +53,11 @@ export default function ChatBox({ uploadedText, onOutputGenerated }: ChatBoxProp
     setInput('');
     setLoading(true);
 
+    captureEvent('chat_message_sent', {
+      source: uploadedText ? 'chat_with_upload' : 'chat_only',
+      message_length: input.length,
+    });
+
     try {
       // Get auth token if available (only if supabase is configured)
       let headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -86,9 +92,18 @@ export default function ChatBox({ uploadedText, onOutputGenerated }: ChatBoxProp
 
       setMessages((prev) => [...prev, assistantMessage]);
 
+      captureEvent('chat_message_received', {
+        mode: 'chat',
+        message_length: data.message?.length ?? 0,
+      });
+
       // If response looks like generated content, pass it to output viewer
       if (data.message.length > 200 && onOutputGenerated) {
         onOutputGenerated(data.message);
+        captureEvent('doc_generated', {
+          trigger: 'chat_request',
+          output_length: data.message.length,
+        });
       }
     } catch (error: any) {
       console.error('Chat error:', error);
@@ -100,6 +115,7 @@ export default function ChatBox({ uploadedText, onOutputGenerated }: ChatBoxProp
           timestamp: new Date().toISOString(),
         },
       ]);
+      captureEvent('chat_error', { message: error.message, mode: 'chat' });
     } finally {
       setLoading(false);
     }
@@ -109,6 +125,10 @@ export default function ChatBox({ uploadedText, onOutputGenerated }: ChatBoxProp
     if (!uploadedText || loading) return;
 
     setLoading(true);
+
+    captureEvent('intake_extract_requested', {
+      uploaded_text_length: uploadedText.length,
+    });
 
     const userMessage: Message = {
       role: 'user',
@@ -154,6 +174,10 @@ export default function ChatBox({ uploadedText, onOutputGenerated }: ChatBoxProp
 
       if (onOutputGenerated) {
         onOutputGenerated(data.message);
+        captureEvent('intake_extract_completed', {
+          uploaded_text_length: uploadedText.length,
+          output_length: data.message?.length ?? 0,
+        });
       }
     } catch (error: any) {
       console.error('Extract error:', error);
@@ -165,6 +189,7 @@ export default function ChatBox({ uploadedText, onOutputGenerated }: ChatBoxProp
           timestamp: new Date().toISOString(),
         },
       ]);
+      captureEvent('intake_extract_failed', { message: error.message });
     } finally {
       setLoading(false);
     }

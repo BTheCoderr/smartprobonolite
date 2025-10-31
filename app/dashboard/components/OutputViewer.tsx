@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { captureEvent } from '@/lib/posthogClient';
 
 interface OutputViewerProps {
   output: string;
@@ -17,8 +18,14 @@ export default function OutputViewer({ output }: OutputViewerProps) {
       await navigator.clipboard.writeText(output);
       setCopySuccess(true);
       setTimeout(() => setCopySuccess(false), 2000);
+      captureEvent('doc_copied', {
+        output_length: output.length,
+      });
     } catch (error) {
       console.error('Failed to copy:', error);
+      captureEvent('doc_copy_failed', {
+        message: (error as Error).message,
+      });
     }
   };
 
@@ -53,9 +60,18 @@ export default function OutputViewer({ output }: OutputViewerProps) {
       a.click();
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
+
+      captureEvent('doc_downloaded', {
+        format,
+        output_length: output.length,
+      });
     } catch (error: any) {
       console.error('Download error:', error);
       alert('Failed to download document. Please try again.');
+      captureEvent('doc_download_failed', {
+        message: error.message,
+        format,
+      });
     } finally {
       setDownloading(false);
     }

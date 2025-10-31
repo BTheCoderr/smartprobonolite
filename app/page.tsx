@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { captureEvent } from '@/lib/posthogClient';
 
 export default function HomePage() {
   const [earlyAccessForm, setEarlyAccessForm] = useState({
@@ -16,6 +17,7 @@ export default function HomePage() {
   const router = useRouter();
 
   const handleDemo = () => {
+    captureEvent('demo_cta_clicked', { source: 'hero_demo_button' });
     router.push('/demo');
   };
 
@@ -23,6 +25,8 @@ export default function HomePage() {
     e.preventDefault();
     setEarlyAccessLoading(true);
     setEarlyAccessMessage('');
+
+    captureEvent('signup_started', { source: 'early_access_form' });
 
     try {
       const response = await fetch('/api/early-access', {
@@ -38,11 +42,20 @@ export default function HomePage() {
       if (data.success) {
         setEarlyAccessMessage('✅ Thank you! We\'ll be in touch within 24 hours.');
         setEarlyAccessForm({ email: '', name: '', firm: '', message: '' });
+        captureEvent('signup_completed', { plan: 'Free', source: 'early_access_form' });
       } else {
         setEarlyAccessMessage(`❌ ${data.error || 'Something went wrong. Please try again.'}`);
+        captureEvent('signup_failed', {
+          source: 'early_access_form',
+          message: data.error,
+        });
       }
     } catch (error) {
       setEarlyAccessMessage('❌ Failed to submit request. Please try again.');
+      captureEvent('signup_failed', {
+        source: 'early_access_form',
+        message: (error as Error).message,
+      });
     } finally {
       setEarlyAccessLoading(false);
     }
@@ -89,7 +102,10 @@ export default function HomePage() {
               </span>
             </button>
             <button
-              onClick={() => document.getElementById('early-access-form')?.scrollIntoView({ behavior: 'smooth' })}
+              onClick={() => {
+                captureEvent('cta_clicked', { target: 'early_access_scroll' });
+                document.getElementById('early-access-form')?.scrollIntoView({ behavior: 'smooth' });
+              }}
               className="group px-8 py-4 border-2 border-blue-600 text-blue-600 rounded-2xl hover:bg-blue-600 hover:text-white transition-all duration-300 transform hover:scale-105 font-semibold text-lg"
             >
               <span className="flex items-center justify-center gap-2">
