@@ -25,6 +25,7 @@ export default function ChatBox({ uploadedText, onOutputGenerated }: ChatBoxProp
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [hasMounted, setHasMounted] = useState(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -33,6 +34,10 @@ export default function ChatBox({ uploadedText, onOutputGenerated }: ChatBoxProp
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    setHasMounted(true);
+  }, []);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -217,7 +222,7 @@ export default function ChatBox({ uploadedText, onOutputGenerated }: ChatBoxProp
                   message.role === 'user' ? 'text-primary-100' : 'text-gray-400'
                 }`}
               >
-                {new Date(message.timestamp).toLocaleTimeString()}
+                {hasMounted ? new Date(message.timestamp).toLocaleTimeString() : '--:--'}
               </p>
             </div>
           </div>
