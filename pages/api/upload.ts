@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import formidable from 'formidable';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import mammoth from 'mammoth';
 import pdf from 'pdf-parse';
@@ -31,8 +32,8 @@ export default async function handler(
   }
 
   try {
-    // Ensure upload directory exists
-    const uploadDir = path.join(process.cwd(), 'uploads');
+    // Ensure upload directory exists (use os tmp dir for serverless environments)
+    const uploadDir = path.join(os.tmpdir(), 'smartprobono-uploads');
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
@@ -40,7 +41,7 @@ export default async function handler(
     const form = formidable({
       maxFileSize: 10 * 1024 * 1024, // 10MB
       keepExtensions: true,
-      uploadDir: uploadDir,
+      uploadDir,
     });
 
     const [fields, files] = await new Promise<[formidable.Fields, formidable.Files]>(
