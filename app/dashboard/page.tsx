@@ -317,14 +317,18 @@ export default function DashboardPage() {
       )}
 
       {/* Footer */}
-      <div className="mt-6 text-center">
-        <p className="text-xs text-gray-500">
-          SmartProBono © 2025 | Powered by <span className="text-primary-600 font-semibold">Ermi AI</span>
-        </p>
-        <p className="text-xs text-gray-400 mt-1">
+      <footer className="mt-8 border-t border-gray-200 pt-4">
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-3 text-center text-xs text-gray-500">
+          <span>SmartProBono © {new Date().getFullYear()}</span>
+          <span className="hidden sm:inline">•</span>
+          <span>
+            Powered by <span className="text-primary-600 font-semibold">Ermi AI</span>
+          </span>
+        </div>
+        <p className="mt-2 text-center text-xs text-gray-400">
           Ermi does not provide legal advice — all outputs require attorney review.
         </p>
-      </div>
+      </footer>
     </div>
   );
 }
