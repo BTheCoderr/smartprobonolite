@@ -2,11 +2,11 @@
 
 import { useEffect } from 'react';
 import { posthog } from '@/lib/posthogClient';
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
+import { supabase } from '@/lib/supabaseClient';
 
 export default function ClientAuthListener() {
   useEffect(() => {
-    const supabase = createClientComponentClient();
+    if (!supabase) return;
 
     const { data } = supabase.auth.onAuthStateChange(async (_event, session) => {
       const user = session?.user;
