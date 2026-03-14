@@ -128,7 +128,7 @@ export default function RIEvictionIntakePage() {
       if (phoneErr) e.phone = phoneErr;
     }
     if (stepIndex >= 5) {
-      if (!data.understandsNotLawFirm) e.understandsNotLawFirm = 'Please confirm this prototype is not a law firm.';
+      if (!data.understandsNotLawFirm) e.understandsNotLawFirm = 'Please confirm you understand this is not a law firm.';
       if (!data.agreesInfoOnly) e.agreesInfoOnly = 'Please confirm you understand this is informational support.';
     }
     return e;
@@ -654,7 +654,7 @@ export default function RIEvictionIntakePage() {
         </Card>
 
         <div className="text-xs text-gray-500 leading-relaxed">
-          Prototype note: answers are stored only in this browser for demo purposes. No account required.
+          Note: answers are stored only in this browser. No account required.
         </div>
       </main>
     </div>

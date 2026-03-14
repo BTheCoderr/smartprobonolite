@@ -157,11 +157,6 @@ export default function ChatBox({
       message_length: messageText.length,
     });
 
-    captureEvent('chat_message_sent', {
-      source: uploadedText ? 'chat_with_upload' : 'chat_only',
-      message_length: messageText.length,
-    });
-
     try {
       // Get auth token if available (only if supabase is configured)
       let headers: Record<string, string> = { 'Content-Type': 'application/json' };

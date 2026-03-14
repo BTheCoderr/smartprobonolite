@@ -51,9 +51,20 @@ export default function SummaryPage() {
     );
   }
 
-  const flagsOn = Object.entries(guidance.issueFlags)
+  const FLAG_LABELS: Record<string, string> = {
+    urgentCourtDate: 'Urgent court date',
+    languageAccess: 'Language access',
+    possibleSubsidy: 'Subsidy involved',
+    unsafeConditions: 'Unsafe conditions',
+    dvSafety: 'DV / safety context',
+    disabilityAccommodation: 'Disability / accommodation',
+    possibleRetaliation: 'Possible retaliation',
+    possibleDiscrimination: 'Possible discrimination',
+    highArrears: 'Higher arrears',
+  };
+  const flagBadges = Object.entries(guidance.issueFlags)
     .filter(([, v]) => v)
-    .map(([k]) => k);
+    .map(([k]) => FLAG_LABELS[k] ?? k);
 
   return (
     <div className="min-h-screen bg-spb-bg">
@@ -171,8 +182,8 @@ export default function SummaryPage() {
               eligibility signal: <span className="font-semibold text-gray-900">{guidance.eligibility.possibleFinancialEligibility}</span>
             </div>
             <div className="flex flex-wrap gap-2">
-              {flagsOn.length ? (
-                flagsOn.map((f) => (
+              {flagBadges.length ? (
+                flagBadges.map((f) => (
                   <span key={f} className="px-3 py-1 rounded-full text-xs font-semibold bg-gray-50 border border-gray-200 text-gray-800">
                     {f}
                   </span>
@@ -197,7 +208,7 @@ export default function SummaryPage() {
               <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-200 pb-2 mb-2">RI Handout Context</div>
               <div className="rounded-2xl border border-gray-200 p-4 space-y-2">
               <div className="text-xs text-gray-500 mb-2">
-                Manually transcribed for demo. See full details on results page.
+                Manually transcribed from RILS materials. See full details on results page.
               </div>
               {guidance.handoutSections.slice(0, 2).map((s) => (
                 <div key={s.title} className="text-sm">

@@ -100,7 +100,11 @@ export default async function handler(
       const hfData = await hfResponse.json();
       responseText = hfData[0]?.generated_text || 'I apologize, but I need a moment to process that. Could you try rephrasing your question?';
     } else if (aiProvider === 'groq') {
-      // Groq (also has free tier)
+      // Groq (also has free tier) – required for RI eviction assistant
+      if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY.trim() === '') {
+        console.warn('GROQ_API_KEY is not set. Using fallback response.');
+        responseText = generateFallbackResponse(userMessage.content, mode);
+      } else {
       const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -136,6 +140,7 @@ export default async function handler(
         responseText = generateFallbackResponse(userMessage.content, mode);
       } else {
         responseText = aiResponse;
+      }
       }
     } else {
       // Fallback: Simple rule-based responses
@@ -216,8 +221,10 @@ export default async function handler(
   } catch (error: any) {
     console.error('Chat API Error:', error);
     
-    // Fallback response on error
-    const fallbackResponse = generateFallbackResponse('', 'chat');
+    // Fallback response on error (preserve mode for RI eviction)
+    const body = req.body as { messages?: Message[]; mode?: string };
+    const lastContent = body.messages?.length ? (body.messages[body.messages.length - 1]?.content ?? '') : '';
+    const fallbackResponse = generateFallbackResponse(lastContent, body.mode ?? 'chat');
     
     return res.status(200).json({
       message: fallbackResponse,

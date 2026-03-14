@@ -64,14 +64,14 @@ export default function RiAssistantPage() {
 
       <main className="mx-auto max-w-3xl px-4 py-6">
         <div className="mb-4">
-          <h1 className="text-xl font-bold text-gray-900">Ermi – Rhode Island Eviction Assistant</h1>
+          <h1 className="text-xl font-bold text-gray-900">Ermi – SmartProBono's Rhode Island Eviction Assistant</h1>
           <p className="text-sm text-gray-600 mt-1">
             Ask questions about eviction notices, tenant rights, and court procedures in Rhode Island.
           </p>
         </div>
 
         <NoticeBox title="Informational guidance only" tone="warning">
-          Ermi provides general information based on Rhode Island materials. Ermi does not give legal advice.
+          Ermi provides general information based on Rhode Island materials and does not give legal advice.
           Legal staff or an attorney should review your situation.
         </NoticeBox>
 

@@ -54,16 +54,16 @@ export default function MaterialsPage() {
             SmartProBono Lite
           </Link>
           <Link href="/ri/eviction/intake" className="text-sm font-medium text-spb-blue hover:underline">
-            Go to Intake
+            Start intake
           </Link>
         </div>
       </header>
 
       <main className="mx-auto max-w-3xl px-4 py-8 space-y-6">
         <div className="space-y-2">
-          <h1 className="text-2xl md:text-3xl font-bold text-spb-ink">Rhode Island materials (demo grounding)</h1>
+          <h1 className="text-2xl md:text-3xl font-bold text-spb-ink">Rhode Island materials</h1>
           <p className="text-gray-700">
-            The Handbook and Intake Form are pre-loaded for demo. You can upload additional documents (e.g., RILS handout)
+            The Handbook and Intake Form are pre-loaded. You can upload additional documents (e.g., RILS handout)
             here; guidance will cite from whichever materials are available.
           </p>
         </div>
@@ -77,7 +77,7 @@ export default function MaterialsPage() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="font-semibold text-gray-900">Uploaded documents</div>
-              <div className="text-sm text-gray-600">{countLabel} stored in local demo memory</div>
+              <div className="text-sm text-gray-600">{countLabel} stored locally in this browser</div>
             </div>
             <GhostButton
               type="button"

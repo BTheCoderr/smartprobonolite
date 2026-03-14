@@ -94,7 +94,7 @@ export default function ResultsPage() {
           <div className="text-sm font-medium text-gray-600">Rhode Island · Eviction Help Desk (prototype)</div>
           <h1 className="text-2xl md:text-3xl font-bold text-spb-ink">Next-step guidance</h1>
           <p className="text-gray-700">
-            This is a conservative, staff-reviewed summary based on your intake and any uploaded RI materials.
+            This is a conservative summary for staff review, based on your intake and any uploaded RI materials.
           </p>
         </div>
 
@@ -133,7 +133,7 @@ export default function ResultsPage() {
 
         <Card className="space-y-5">
           <div className="space-y-2">
-            <div className="text-sm font-semibold text-gray-700">Documents that may help staff review your situation</div>
+            <div className="text-sm font-semibold text-gray-700">Immediate next steps</div>
             <ul className="list-disc ml-5 space-y-1 text-gray-900">
               {guidance.immediateNextSteps.map((s) => (
                 <li key={s}>{s}</li>
@@ -142,7 +142,7 @@ export default function ResultsPage() {
           </div>
 
           <div className="space-y-2">
-            <div className="text-sm font-semibold text-gray-700">Documents that may help staff review your situation</div>
+            <div className="text-sm font-semibold text-gray-700">Documents to gather for staff review</div>
             <ul className="list-disc ml-5 space-y-1 text-gray-900">
               {guidance.gatherDocuments.map((s) => (
                 <li key={s}>{s}</li>
@@ -165,7 +165,7 @@ export default function ResultsPage() {
             <div>
               <div className="text-sm font-semibold text-gray-700">From RILS Eviction Help Desk handout</div>
               <div className="text-xs text-gray-500 mt-1">
-                Manually transcribed from the handout for demo grounding. Cross-checked with RI Landlord-Tenant Handbook.
+                Manually transcribed from the handout. Cross-checked with RI Landlord-Tenant Handbook.
               </div>
             </div>
             {guidance.handoutSections.map((section) => (
