@@ -1,11 +1,23 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { intakePrompt, extractionPrompt } from '@/lib/prompts/intakePrompt';
+import {
+  RI_EVICTION_SYSTEM_PROMPT,
+  buildRiEvictionContextPayload,
+  type RiIntakeContext,
+} from '@/lib/prompts/riEvictionPrompt';
+import { EMBEDDED_MATERIALS } from '@/lib/ri/embeddedMaterials';
 import { supabaseAdmin } from '@/lib/supabaseClient';
 
 type Message = {
   role: 'user' | 'assistant' | 'system';
   content: string;
 };
+
+function getRiMaterialsExcerpts(): string {
+  return EMBEDDED_MATERIALS.filter((m) => m.extractedText && m.extractedText.length > 0)
+    .map((m) => `[${m.title}]\n${m.extractedText}`)
+    .join('\n\n---\n\n');
+}
 
 export default async function handler(
   req: NextApiRequest,
@@ -16,25 +28,30 @@ export default async function handler(
   }
 
   try {
-    const { messages, uploadedText, mode } = req.body as {
+    const { messages, uploadedText, mode, intakeContext } = req.body as {
       messages: Message[];
       uploadedText?: string;
-      mode?: 'chat' | 'extract';
+      mode?: 'chat' | 'extract' | 'ri_eviction';
+      intakeContext?: RiIntakeContext | null;
     };
 
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'Messages array is required' });
     }
 
-    // Build context from last 5 messages
-    const recentMessages = messages.slice(-5);
+    // Build context from last 5 messages (or 6 for ri_eviction to keep more context)
+    const recentMessages = messages.slice(-(mode === 'ri_eviction' ? 6 : 5));
     const context = recentMessages
       .map((m) => `${m.role}: ${m.content}`)
       .join('\n');
 
     // Determine system prompt based on mode
     let systemPrompt: string;
-    if (mode === 'extract' && uploadedText) {
+    if (mode === 'ri_eviction') {
+      const riExcerpts = getRiMaterialsExcerpts();
+      const contextPayload = buildRiEvictionContextPayload(intakeContext ?? null, riExcerpts);
+      systemPrompt = `${RI_EVICTION_SYSTEM_PROMPT}\n\n${contextPayload}`;
+    } else if (mode === 'extract' && uploadedText) {
       systemPrompt = extractionPrompt(uploadedText);
     } else {
       systemPrompt = intakePrompt(context, uploadedText);
@@ -212,6 +229,23 @@ export default async function handler(
 // Simple fallback responses when AI isn't available
 function generateFallbackResponse(userMessage: string, mode?: string): string {
   console.log('Using fallback response for:', userMessage);
+
+  if (mode === 'ri_eviction') {
+    return `Explanation:
+Based on Rhode Island landlord-tenant law, eviction-related questions depend on your specific situation. The Rhode Island Landlord-Tenant Handbook and Eviction Help Desk materials provide guidance on notices, court process, and tenant rights.
+
+Next steps:
+- Bring any eviction notice, payment records, and communication with your landlord to the Eviction Help Desk
+- Do not ignore court papers; plan to attend any scheduled hearing
+- If you have a housing subsidy, bring subsidy paperwork and contact info
+
+Source basis:
+- Rhode Island Landlord-Tenant Handbook 2024
+- Eviction Help Desk Intake Form
+
+Staff review note:
+This is informational guidance only. Eviction Help Desk staff or an attorney should review your situation before you rely on next steps.`;
+  }
   
   if (mode === 'extract') {
     return "I've reviewed your document. Here are the key details I've identified:\n\n• Client information\n• Case type\n• Important dates\n\nWould you like me to generate a draft document based on this information?";

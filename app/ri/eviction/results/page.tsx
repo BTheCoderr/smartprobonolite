@@ -79,6 +79,9 @@ export default function ResultsPage() {
             <Link href="/ri/eviction/intake" className="text-sm font-medium text-spb-blue hover:underline">
               Edit intake
             </Link>
+            <Link href="/ri/assistant" className="text-sm font-medium text-spb-blue hover:underline">
+              Ask Ermi
+            </Link>
             <Link href="/ri/eviction/summary" className="text-sm font-medium text-spb-blue hover:underline">
               Case summary
             </Link>
@@ -209,12 +212,26 @@ export default function ResultsPage() {
               ))}
             </div>
           ) : (
-            <NoticeBox title="Demo note" tone="info">
-              For the RWU/RILS meeting, upload the three RI documents once in this browser (PDF/DOCX/TXT). The results
-              page will then attach conservative excerpts as citations.
+            <NoticeBox title="Note" tone="info">
+              Upload RI documents (PDF/DOCX/TXT) at Materials to attach excerpts as citations. Embedded Handbook and Intake Form are used by default.
             </NoticeBox>
           )}
         </Card>
+
+        <div className="rounded-2xl border border-spb-blue/30 bg-blue-50 p-5">
+          <div className="text-sm font-semibold text-gray-900 mb-2">
+            Need help understanding your notice or next steps?
+          </div>
+          <p className="text-sm text-gray-700 mb-3">
+            Ermi uses your intake and Rhode Island materials to answer questions. Informational guidance only—legal staff should review.
+          </p>
+          <Link
+            href="/ri/assistant"
+            className="inline-flex px-4 py-2 text-sm font-medium bg-spb-blue text-white rounded-xl hover:bg-spb-blue/90 transition-colors"
+          >
+            Ask Ermi
+          </Link>
+        </div>
 
         <div className="flex items-center justify-between gap-3">
           <GhostButton type="button" onClick={() => router.push('/ri/eviction/intake')}>

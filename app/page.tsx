@@ -32,6 +32,11 @@ export default function HomePage() {
               <Link href="/ri/eviction/intake" className="inline-flex">
                 <PrimaryButton type="button">Start Intake</PrimaryButton>
               </Link>
+              <Link href="/ri/assistant" className="inline-flex">
+                <GhostButton type="button" className="w-full sm:w-auto">
+                  Ask Ermi
+                </GhostButton>
+              </Link>
               <Link href="/ri/eviction/summary" className="inline-flex">
                 <GhostButton type="button" className="w-full sm:w-auto">
                   View Case Summary (if started)
@@ -40,7 +45,7 @@ export default function HomePage() {
             </div>
 
             <div className="text-xs text-gray-500">
-              Meeting/demo note: this is a focused intake workflow for Rhode Island eviction/landlord–tenant issues only.
+              Rhode Island eviction and landlord–tenant issues only.
             </div>
           </div>
 
@@ -60,6 +65,7 @@ export default function HomePage() {
                 <li>A structured multi-step intake</li>
                 <li>Eligibility and issue-flag tagging for staff triage</li>
                 <li>A plain-language results screen with next-step checklist</li>
+                <li>Ermi — ask questions, get RI-grounded answers</li>
                 <li>A printable Tenant Case Summary for RILS/RWU review</li>
               </ul>
               <div className="mt-4 text-sm">
@@ -74,9 +80,9 @@ export default function HomePage() {
 
       <footer className="py-6 text-center">
         <Link
-          href="/demo"
+          href="/ri/assistant"
           className="text-[10px] text-gray-400 hover:text-gray-600"
-          title="Full AI demo (chat, uploader, generator)"
+          title="Ermi – Rhode Island Eviction Assistant"
         >
           ·
         </Link>

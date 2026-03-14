@@ -79,8 +79,9 @@
    - Immediate next steps
    - Documents to gather
    - **Grounding excerpts** (from Handbook/Intake Form)
-5. **Case summary** – **View tenant case summary** → **Print / Save PDF**.
-6. **Talking points**: "Tenant completes digital intake → gets structured guidance grounded in RI materials → generates case summary for legal staff. No generic chatbot; excerpts cited from Handbook and intake form."
+5. **Eviction Help Desk Assistant** – **Ask about eviction** → `/ri/assistant` – Chatbot answers questions about notices, tenant rights, court procedures, grounded in RI materials + checklist + source.
+6. **Case summary** – **View tenant case summary** → **Print / Save PDF**.
+7. **Talking points**: "Tenant completes digital intake → gets structured guidance grounded in RI materials → can ask follow-up questions in the assistant → generates case summary for legal staff. No generic chatbot; excerpts cited from Handbook and intake form."
 
 ### Fallback if issues
 - If no citations: "Embedded materials are pre-loaded; you can also upload at /ri/materials."

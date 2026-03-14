@@ -10,20 +10,49 @@ type Message = {
   timestamp: string;
 };
 
+export type RiIntakeContext = {
+  summary?: string;
+  category?: string;
+  categoryLabel?: string;
+  flags?: string[];
+  citations?: Array<{ sourceTitle: string; quote: string }>;
+  handoutSections?: Array<{ title: string; summary: string; bullets?: string[] }>;
+};
+
 interface ChatBoxProps {
   uploadedText?: string;
   onOutputGenerated?: (output: string) => void;
   onTypingChange?: (typing: boolean) => void;
   extractButtonRef?: React.RefObject<HTMLButtonElement>;
+  /** When 'legacy', uses Ermi general assistant. Default is 'ri_eviction' for RWU/RILS demo. Set to 'legacy' to restore broader behavior. */
+  assistantMode?: 'legacy' | 'ri_eviction';
+  /** Intake context for RI eviction mode (from buildGuidance). Pass when assistantMode is 'ri_eviction' (default). */
+  intakeContext?: RiIntakeContext | null;
 }
 
-export default function ChatBox({ uploadedText, onOutputGenerated, onTypingChange, extractButtonRef }: ChatBoxProps) {
+const RI_INITIAL_MESSAGE =
+  "Hi! I'm Ermi, your Rhode Island eviction assistant. I provide informational guidance about eviction notices, tenant rights, and court procedures. Legal staff should review your situation. What would you like to know?";
+
+const LEGACY_INITIAL_MESSAGE =
+  "Hi! I'm Ermi, your AI legal assistant. I help renters get organized for housing problems like eviction, repairs, and deposits. In this demo, you can practice how SmartProBono Lite summarizes your story and drafts letters or forms for an attorney to review. What would you like to work on today?";
+
+export default function ChatBox({
+  uploadedText,
+  onOutputGenerated,
+  onTypingChange,
+  extractButtonRef,
+  assistantMode = 'ri_eviction',
+  intakeContext = null,
+}: ChatBoxProps) {
+  const isRiMode = assistantMode === 'ri_eviction';
+  const initialMessage = isRiMode ? RI_INITIAL_MESSAGE : LEGACY_INITIAL_MESSAGE;
+
   // Check if user is authenticated - if not, this is demo mode and should reset on refresh
   const [isDemoMode, setIsDemoMode] = useState(true);
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      content: 'Hi! I\'m Ermi, your AI legal assistant. I help renters get organized for housing problems like eviction, repairs, and deposits. In this demo, you can practice how SmartProBono Lite summarizes your story and drafts letters or forms for an attorney to review. What would you like to work on today?',
+      content: initialMessage,
       timestamp: new Date().toISOString(),
     },
   ]);
@@ -148,8 +177,9 @@ export default function ChatBox({ uploadedText, onOutputGenerated, onTypingChang
         headers,
         body: JSON.stringify({
           messages: [...messages, userMessage],
-          uploadedText: uploadedText || undefined,
-          mode: 'chat',
+          uploadedText: isRiMode ? undefined : (uploadedText || undefined),
+          mode: isRiMode ? 'ri_eviction' : 'chat',
+          intakeContext: isRiMode ? intakeContext : undefined,
         }),
       });
 
@@ -290,18 +320,18 @@ export default function ChatBox({ uploadedText, onOutputGenerated, onTypingChang
   return (
     <div className="bg-white rounded-xl shadow-md overflow-hidden flex flex-col h-full border border-gray-200">
       {/* Header */}
-      <div className="bg-gradient-to-r from-primary-600 to-primary-700 text-white px-6 py-4 flex items-center justify-between">
+      <div className={`text-white px-6 py-4 flex items-center justify-between ${isRiMode ? 'bg-gradient-to-r from-spb-blue to-spb-blue/90' : 'bg-gradient-to-r from-primary-600 to-primary-700'}`}>
         <div className="flex items-center gap-2">
           <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
           </svg>
           <div>
             <h2 className="text-lg font-semibold">Ermi</h2>
-            <p className="text-xs text-primary-100">AI Legal Assistant</p>
+            <p className="text-xs text-white/80">{isRiMode ? 'Rhode Island Eviction Assistant' : 'AI Legal Assistant'}</p>
           </div>
         </div>
         
-        {uploadedText && (
+        {uploadedText && !isRiMode && (
           <button
             ref={extractButtonRef}
             onClick={handleExtractInfo}
@@ -359,20 +389,48 @@ export default function ChatBox({ uploadedText, onOutputGenerated, onTypingChang
         <div className="border-t border-gray-200 p-4 bg-gray-50">
           <p className="text-xs font-medium text-gray-600 mb-2">SUGGESTIONS:</p>
           <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => handleSendMessage("Help me explain my eviction notice")}
-              disabled={loading}
-              className="px-4 py-2 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 text-left"
-            >
-              Help me explain my eviction notice
-            </button>
-            <button
-              onClick={() => handleSendMessage("Draft a letter to my landlord about no heat")}
-              disabled={loading}
-              className="px-4 py-2 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 text-left"
-            >
-              Draft a letter to my landlord about no heat
-            </button>
+            {isRiMode ? (
+              <>
+                <button
+                  onClick={() => handleSendMessage('What does a 5-day eviction notice mean?')}
+                  disabled={loading}
+                  className="px-4 py-2 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 text-left"
+                >
+                  What does a 5-day eviction notice mean?
+                </button>
+                <button
+                  onClick={() => handleSendMessage('What should I bring to the Eviction Help Desk?')}
+                  disabled={loading}
+                  className="px-4 py-2 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 text-left"
+                >
+                  What should I bring to the Eviction Help Desk?
+                </button>
+                <button
+                  onClick={() => handleSendMessage('Can my landlord lock me out without going to court?')}
+                  disabled={loading}
+                  className="px-4 py-2 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 text-left"
+                >
+                  Can my landlord lock me out without going to court?
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => handleSendMessage("Help me explain my eviction notice")}
+                  disabled={loading}
+                  className="px-4 py-2 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 text-left"
+                >
+                  Help me explain my eviction notice
+                </button>
+                <button
+                  onClick={() => handleSendMessage("Draft a letter to my landlord about no heat")}
+                  disabled={loading}
+                  className="px-4 py-2 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 text-left"
+                >
+                  Draft a letter to my landlord about no heat
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
