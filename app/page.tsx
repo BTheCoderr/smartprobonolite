@@ -3,165 +3,147 @@
 import Link from 'next/link';
 import { GhostButton, PrimaryButton } from '@/components/ui';
 import { NoticeBox } from '@/components/ri/NoticeBox';
+import { PublicHeader } from '@/components/PublicHeader';
+
+function ToolCard({
+  title,
+  description,
+  href,
+  action,
+}: {
+  title: string;
+  description: string;
+  href: string;
+  action: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className="group rounded-2xl border border-gray-200 bg-white p-6 shadow-sm hover:border-spb-blue/40 hover:shadow-md transition flex flex-col"
+    >
+      <h2 className="text-lg font-semibold text-gray-900 group-hover:text-spb-blue">{title}</h2>
+      <p className="mt-2 text-sm text-gray-600 flex-1">{description}</p>
+      <span className="mt-4 text-sm font-medium text-spb-blue">{action} →</span>
+    </Link>
+  );
+}
 
 export default function HomePage() {
   return (
     <div className="min-h-screen bg-spb-bg">
-      <header className="border-b border-gray-200 bg-white">
-        <div className="mx-auto max-w-4xl px-4 py-4 flex items-center justify-between">
-          <div className="font-semibold text-gray-900">SmartProBono Lite</div>
-          <Link href="/ri/materials" className="text-sm font-medium text-spb-blue hover:underline">
-            Materials
-          </Link>
-        </div>
-      </header>
+      <PublicHeader />
 
-      <main className="mx-auto max-w-4xl px-4 py-10 md:py-16 space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
-          <div className="space-y-5">
-            <div className="text-sm font-semibold text-gray-600">Rhode Island · Eviction Help Desk (prototype)</div>
-            <h1 className="text-3xl md:text-4xl font-bold text-spb-ink leading-tight">
-              A simple intake tool for Rhode Island tenants facing eviction
-            </h1>
-            <p className="text-gray-700 leading-relaxed">
-              This prototype helps self-represented tenants organize key facts, understand likely issue categories, and generate a
-              clear case summary for legal aid staff review.
-            </p>
-
-            <div className="flex flex-col sm:flex-row gap-3">
-              <Link href="/ri/eviction/intake" className="inline-flex">
-                <PrimaryButton type="button">Start Intake</PrimaryButton>
-              </Link>
-              <Link href="/ri/assistant" className="inline-flex">
-                <GhostButton type="button" className="w-full sm:w-auto">
-                  Ask Ermi
-                </GhostButton>
-              </Link>
-              <Link href="/ri/eviction/summary" className="inline-flex">
-                <GhostButton type="button" className="w-full sm:w-auto">
-                  View Case Summary (if started)
-                </GhostButton>
-              </Link>
-            </div>
-
-            <div className="text-xs text-gray-500">
-              Rhode Island eviction and landlord–tenant issues only.
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <NoticeBox title="Not a law firm" tone="warning">
-              This tool provides general informational support and preparation help. It does not provide legal advice and does not
-              create an attorney–client relationship.
-            </NoticeBox>
-            <NoticeBox title="Grounded in RI materials" tone="info">
-              Guidance is designed to attach excerpts from the Rhode Island materials you upload (RILS handout + handbook), rather
-              than acting like a generic chatbot.
-            </NoticeBox>
-
-            <div className="rounded-2xl border border-gray-200 bg-white p-5">
-              <div className="text-sm font-semibold text-gray-900 mb-2">What you’ll get</div>
-              <ul className="list-disc ml-5 text-sm text-gray-800 space-y-1">
-                <li>A structured multi-step intake</li>
-                <li>Eligibility and issue-flag tagging for staff triage</li>
-                <li>A plain-language results screen with next-step checklist</li>
-                <li>Ermi — ask questions, get RI-grounded answers</li>
-                <li>A printable Tenant Case Summary for RILS/RWU review</li>
-              </ul>
-              <div className="mt-4 text-sm">
-                <Link href="/ri/materials" className="font-medium text-spb-blue hover:underline">
-                  Upload RI materials for citations →
-                </Link>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Rhode Island Eviction Help Desk Prototype */}
-        <section className="rounded-2xl border border-gray-200 bg-white p-6 md:p-8">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">Rhode Island Eviction Help Desk Prototype</h2>
-          <p className="text-gray-700 mb-4">
-            A focused workflow for tenants and legal aid staff:
+      <main className="mx-auto max-w-5xl px-4 py-10 md:py-14 space-y-12">
+        <section className="text-center max-w-3xl mx-auto space-y-5">
+          <h1 className="text-3xl md:text-4xl font-bold text-spb-ink leading-tight">
+            Understand legal documents, ask questions, and get guided help
+          </h1>
+          <p className="text-lg text-gray-700 leading-relaxed">
+            SmartProBono turns confusing legal language into plain-English guidance, next steps, and documents you can download or
+            print—with Ermi as your assistant across every tool.
           </p>
-          <div className="space-y-2 text-gray-700 mb-6">
-            <p>Tenant completes guided intake</p>
-            <p>→ System organizes eviction facts and notices</p>
-            <p>→ Ermi answers questions using Rhode Island housing materials</p>
-            <p>→ A structured case summary is generated for staff review</p>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center pt-2">
+            <Link href="/document" className="inline-flex justify-center">
+              <PrimaryButton type="button">Upload a document</PrimaryButton>
+            </Link>
+            <Link href="/diy/expungement" className="inline-flex justify-center">
+              <GhostButton type="button" className="w-full sm:w-auto">
+                Start DIY expungement prep
+              </GhostButton>
+            </Link>
           </div>
-          <Link href="/ri/eviction/intake" className="inline-flex">
-            <PrimaryButton type="button">Try the prototype</PrimaryButton>
-          </Link>
         </section>
 
-        {/* How SmartProBono Works */}
+        <section>
+          <h2 className="sr-only">Legal help toolbox</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <ToolCard
+              title="Understand a legal document"
+              description="Upload a PDF or Word file, get a plain-English summary, and ask follow-up questions."
+              href="/document"
+              action="Upload"
+            />
+            <ToolCard
+              title="Ask Ermi"
+              description="Chat in everyday language about wording, next steps, and drafts for your review—not legal advice."
+              href="/chat"
+              action="Open chat"
+            />
+            <ToolCard
+              title="Generate a letter or summary"
+              description="Describe what you need; drafts appear in the output panel for export or print."
+              href="/generate"
+              action="Start generating"
+            />
+            <ToolCard
+              title="DIY expungement prep"
+              description="Build a preparation summary and checklist before you talk to a clerk or legal aid office."
+              href="/diy/expungement"
+              action="Start prep"
+            />
+            <ToolCard
+              title="Rhode Island eviction help"
+              description="Guided intake, issue flags, Ermi grounded in RI materials, and a printable tenant case summary."
+              href="/ri/eviction/intake"
+              action="Start RI intake"
+            />
+            <ToolCard
+              title="Full workspace"
+              description="All tools in one screen: upload, chat, and output—best on a larger display."
+              href="/tools"
+              action="Open workspace"
+            />
+          </div>
+        </section>
+
         <section className="rounded-2xl border border-gray-200 bg-gray-50 p-6 md:p-8">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">How SmartProBono Works</h2>
-          <div className="flex flex-wrap items-center gap-2 text-sm text-gray-700">
-            <span className="font-medium">Tenant Intake</span>
-            <span>→</span>
-            <span className="font-medium">Organized Case Facts</span>
-            <span>→</span>
-            <span className="font-medium">Ask Ermi Questions</span>
-            <span>→</span>
-            <span className="font-medium">Printable Case Summary</span>
-            <span>→</span>
-            <span className="font-medium">Staff Review</span>
-          </div>
+          <h2 className="text-xl font-bold text-gray-900 mb-4">How it works</h2>
+          <ol className="list-decimal ml-5 text-gray-700 space-y-2 text-sm md:text-base">
+            <li>Upload a document or answer a few guided questions.</li>
+            <li>Get plain-English explanations, prep checklists, or draft text.</li>
+            <li>Download DOCX or use Print / Save as PDF from your browser.</li>
+            <li>Use Ask Ermi anywhere to connect the dots between tools.</li>
+          </ol>
         </section>
 
-        {/* Ermi – SmartProBono's Rhode Island Eviction Assistant */}
-        <section className="rounded-2xl border border-spb-blue/20 bg-blue-50/50 p-6 md:p-8">
-          <h2 className="text-xl font-bold text-gray-900 mb-2">Ermi – SmartProBono's Rhode Island Eviction Assistant</h2>
-          <p className="text-gray-700 mb-4">
-            Ermi answers tenant questions about eviction notices, court procedures, and tenant rights using the tenant's
-            intake information and Rhode Island housing materials to provide informational guidance.
-          </p>
-          <ul className="list-disc ml-5 text-sm text-gray-800 space-y-1">
-            <li>Answers tenant questions about eviction and landlord–tenant issues</li>
-            <li>Uses intake context to tailor responses</li>
-            <li>References Rhode Island Landlord-Tenant Handbook and Eviction Help Desk materials</li>
-            <li>Provides informational guidance only—legal staff should review each situation</li>
-          </ul>
-          <div className="mt-4">
-            <Link href="/ri/assistant" className="inline-flex">
-              <GhostButton type="button">Ask Ermi</GhostButton>
-            </Link>
-          </div>
-        </section>
-
-        {/* Grounded in Rhode Island Housing Materials */}
         <section className="rounded-2xl border border-gray-200 bg-white p-6 md:p-8">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">Grounded in Rhode Island Housing Materials</h2>
-          <ul className="list-disc ml-5 text-gray-700 space-y-2">
-            <li>Rhode Island Landlord-Tenant Handbook</li>
-            <li>Eviction Help Desk Intake Form</li>
-            <li>Rhode Island Legal Services guidance</li>
-          </ul>
-          <div className="mt-4">
-            <Link href="/ri/materials" className="text-sm font-medium text-spb-blue hover:underline">
-              Upload or view materials →
+          <h2 className="text-xl font-bold text-gray-900 mb-3">Rhode Island pilot</h2>
+          <p className="text-gray-700 text-sm leading-relaxed mb-4">
+            The Rhode Island Eviction Help Desk flow remains available for tenants and staff: intake, results, Ermi with RI
+            materials, and a tenant case summary.
+          </p>
+          <div className="flex flex-wrap gap-3">
+            <Link href="/ri/eviction/intake">
+              <PrimaryButton type="button">RI eviction intake</PrimaryButton>
+            </Link>
+            <Link href="/ri/assistant">
+              <GhostButton type="button">RI Ermi assistant</GhostButton>
+            </Link>
+            <Link href="/ri/materials">
+              <GhostButton type="button">RI materials</GhostButton>
             </Link>
           </div>
         </section>
 
-        {/* Disclaimer */}
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 md:p-8">
-          <p className="text-sm text-gray-800 leading-relaxed">
-            SmartProBono provides informational tools to help tenants organize their situation before meeting with legal staff.
-            It does not provide legal advice. Legal staff or attorneys should review each situation.
-          </p>
+        <div className="grid md:grid-cols-2 gap-4">
+          <NoticeBox title="Informational tools only" tone="warning">
+            SmartProBono is not a law firm and does not provide legal advice. Local rules vary; confirm important steps with a
+            court or qualified professional.
+          </NoticeBox>
+          <NoticeBox title="Drafts for review" tone="info">
+            AI-generated text is for preparation and education. Have legal staff or an attorney review before you rely on it in
+            court or with an employer.
+          </NoticeBox>
         </div>
       </main>
 
-      <footer className="py-6 text-center">
-        <Link
-          href="/ri/assistant"
-          className="text-[10px] text-gray-400 hover:text-gray-600"
-          title="Ermi – SmartProBono's Rhode Island Eviction Assistant"
-        >
-          ·
-        </Link>
+      <footer className="py-8 text-center text-sm text-gray-500 border-t border-gray-200 bg-white">
+        <p>SmartProBono · Legal help tools for everyday people</p>
+        <p className="mt-1">
+          <Link href="/login" className="text-spb-blue hover:underline">
+            Attorney / pilot login
+          </Link>
+        </p>
       </footer>
     </div>
   );

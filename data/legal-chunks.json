@@ -1,0 +1,182 @@
+[
+  {
+    "chunk_key": "ri_eviction_notice_001",
+    "title": "Understanding a notice",
+    "jurisdiction": "RI",
+    "topic": "eviction_notice",
+    "chunk_text": "A notice from a landlord is usually the first step in a dispute. The user should identify what the document is called, when it was received, and whether it includes a deadline or action required. Not all notices mean immediate eviction.",
+    "tags": ["eviction", "notice"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_eviction_docs_001",
+    "title": "Documents to gather",
+    "jurisdiction": "RI",
+    "topic": "documents",
+    "chunk_text": "Users should gather any lease, payment records, messages with the landlord, and copies of notices. These help clarify the situation and prepare for legal review or next steps.",
+    "tags": ["eviction", "documents"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_eviction_lockout_001",
+    "title": "Lockout situation",
+    "jurisdiction": "RI",
+    "topic": "lockout",
+    "chunk_text": "If a tenant cannot access their home due to changed locks or blocked entry, they should document what happened, including dates, photos, and communication. This situation may require urgent attention.",
+    "tags": ["eviction", "urgent"],
+    "citation_strength": "high"
+  },
+  {
+    "chunk_key": "ri_expungement_overview_001",
+    "title": "Expungement basics",
+    "jurisdiction": "RI",
+    "topic": "expungement",
+    "chunk_text": "Expungement allows certain records to be removed or sealed. The process depends on the case outcome, type of charge, and time passed since resolution.",
+    "tags": ["expungement"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_expungement_docs_001",
+    "title": "Expungement documents",
+    "jurisdiction": "RI",
+    "topic": "expungement_docs",
+    "chunk_text": "To prepare for expungement, users may need case numbers, court records, and identification documents. Having these ready helps with filing or asking for assistance.",
+    "tags": ["expungement"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_eviction_notice_002",
+    "title": "Deadlines on notices",
+    "jurisdiction": "RI",
+    "topic": "eviction_notice",
+    "chunk_text": "If a notice lists a date or number of days, the user should note the exact language and how they received the notice. Deadlines can depend on the type of case; when unsure, legal aid or an attorney can help interpret the paper.",
+    "tags": ["eviction", "notice", "deadlines"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_eviction_docs_002",
+    "title": "Photos and repair records",
+    "jurisdiction": "RI",
+    "topic": "documents",
+    "chunk_text": "Beyond the lease, dated photos of conditions, repair requests in writing, and notes about when problems were reported can support a clear timeline. Keep copies organized by date.",
+    "tags": ["eviction", "documents", "habitability"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_eviction_rent_001",
+    "title": "Rent and payment disputes",
+    "jurisdiction": "RI",
+    "topic": "rent_dispute",
+    "chunk_text": "Disputes about what is owed often turn on the lease, rent history, and proof of payment. Users should collect bank or app transfer records, receipts, and any side agreements in writing.",
+    "tags": ["eviction", "rent"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_eviction_court_001",
+    "title": "Court and hearings (overview)",
+    "jurisdiction": "RI",
+    "topic": "court_process",
+    "chunk_text": "If a case goes to court, tenants should expect formal procedures, deadlines for filings, and possibly mediation. Clerks can explain filing steps but generally cannot give legal advice about how to argue a case.",
+    "tags": ["eviction", "court"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_eviction_mediation_001",
+    "title": "Mediation and agreements",
+    "jurisdiction": "RI",
+    "topic": "mediation",
+    "chunk_text": "Parties may try to resolve issues through negotiation or mediation. Any agreement should be read carefully before signing; it is reasonable to ask for time to review with an advocate or attorney.",
+    "tags": ["eviction", "mediation"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_eviction_service_001",
+    "title": "How papers were delivered",
+    "jurisdiction": "RI",
+    "topic": "service",
+    "chunk_text": "How and when legal papers were delivered can matter. Users should note whether papers were handed to them, mailed, posted, or given to someone else at the address, and the date they actually learned of them when possible.",
+    "tags": ["eviction", "notice"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_eviction_utilities_001",
+    "title": "Utilities shut off",
+    "jurisdiction": "RI",
+    "topic": "utilities",
+    "chunk_text": "If utilities are interrupted in a housing dispute, the user should document the situation, preserve any notices from the landlord or utility, and seek urgent guidance from legal aid or an attorney, especially if health or safety is at risk.",
+    "tags": ["eviction", "urgent", "habitability"],
+    "citation_strength": "high"
+  },
+  {
+    "chunk_key": "ri_expungement_eligibility_001",
+    "title": "Eligibility concepts",
+    "jurisdiction": "RI",
+    "topic": "expungement",
+    "chunk_text": "Whether someone can seal or expunge a record depends on state rules, the disposition of each case, and sometimes waiting periods. Users should verify current law or consult a defense attorney or legal aid rather than assuming eligibility.",
+    "tags": ["expungement"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_expungement_timeline_001",
+    "title": "Timeline and next steps",
+    "jurisdiction": "RI",
+    "topic": "expungement",
+    "chunk_text": "After gathering documents, users can outline a timeline: arrest or charge dates, court dates, and final outcome. That timeline helps advocates assess what petitions or forms may apply.",
+    "tags": ["expungement", "documents"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_self_help_limits_001",
+    "title": "Limits of general information",
+    "jurisdiction": "RI",
+    "topic": "self_help",
+    "chunk_text": "General information cannot predict the outcome of a specific case. Users facing court dates, loss of housing, or safety risks should prioritize help from legal aid, attorneys, or appropriate emergency resources.",
+    "tags": ["general", "safety"],
+    "citation_strength": "low"
+  },
+  {
+    "chunk_key": "ri_plain_english_001",
+    "title": "Reading a document in plain English",
+    "jurisdiction": "RI",
+    "topic": "document_explanation",
+    "chunk_text": "When summarizing a document, separate what it literally says from what might happen next. Flag unknown terms and any dates; suggest the user confirm meaning with legal aid if the stakes are high.",
+    "tags": ["intake", "documents"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_referral_legal_aid_001",
+    "title": "When to suggest legal aid",
+    "jurisdiction": "RI",
+    "topic": "referral",
+    "chunk_text": "Suggest legal aid or a housing attorney when the user has a court date, cannot understand a notice, faces lockout or loss of utilities, or reports domestic violence or immediate danger. Do not promise that any organization can take the case.",
+    "tags": ["referral", "legal_aid"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_subsidized_housing_001",
+    "title": "Subsidized or program housing",
+    "jurisdiction": "RI",
+    "topic": "subsidized_housing",
+    "chunk_text": "Vouchers and project-based programs may have extra rules beyond a private lease. Notices and grievance steps can differ; users should locate program paperwork and ask program staff for written policies when possible.",
+    "tags": ["housing", "subsidy"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_eviction_retaliation_001",
+    "title": "Concerns about retaliation",
+    "jurisdiction": "RI",
+    "topic": "retaliation",
+    "chunk_text": "If a tenant believes action by the landlord followed complaints or organizing, they should document the sequence of events and seek individualized advice. Retaliation claims depend on facts and law.",
+    "tags": ["eviction", "tenant_rights"],
+    "citation_strength": "medium"
+  },
+  {
+    "chunk_key": "ri_eviction_safety_001",
+    "title": "Safety first",
+    "jurisdiction": "RI",
+    "topic": "safety",
+    "chunk_text": "If someone is not safe at home or faces threats, prioritize emergency and safety resources appropriate to their area. Legal strategy can wait until immediate safety needs are addressed when there is acute risk.",
+    "tags": ["safety", "urgent"],
+    "citation_strength": "high"
+  }
+]

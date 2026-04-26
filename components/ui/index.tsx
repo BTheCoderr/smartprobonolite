@@ -1,3 +1,5 @@
+export { StatusMessage } from './StatusMessage';
+
 export function PrimaryButton(props: any) {
   return (
     <button

@@ -1,12 +1,12 @@
+const { withSentryConfig } = require('@sentry/nextjs');
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   experimental: {
-    // Ensure proper module resolution
     esmExternals: true,
   },
   webpack: (config) => {
-    // Ensure proper path resolution
     config.resolve.alias = {
       ...config.resolve.alias,
       '@': require('path').resolve(__dirname),
@@ -15,5 +15,13 @@ const nextConfig = {
   },
 }
 
-module.exports = nextConfig
+module.exports = withSentryConfig(nextConfig, {
+  silent: true,
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+}, {
+  widenClientFileUpload: true,
+  hideSourceMaps: true,
+  disableLogger: true,
+});
 

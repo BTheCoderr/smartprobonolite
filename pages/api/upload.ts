@@ -5,6 +5,14 @@ import os from 'os';
 import path from 'path';
 import mammoth from 'mammoth';
 import pdf from 'pdf-parse';
+import { checkRateLimit, ipFromRequest } from '@/lib/rateLimit';
+import {
+  createLogger,
+  getClientTraceIdFromPagesApi,
+  getRequestIdFromPagesApi,
+  logApiFlow,
+  serializeErrorSafe,
+} from '@/lib/logger';
 
 export const config = {
   api: {
@@ -27,8 +35,52 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
+  const started = Date.now();
+  const requestId = getRequestIdFromPagesApi(req);
+  const clientTraceId = getClientTraceIdFromPagesApi(req);
+
+  const flow = (args: {
+    outcome: 'success' | 'client_error' | 'rate_limited' | 'server_error';
+    status_code: number;
+    error?: unknown;
+    upload_file_bytes?: number;
+    upload_mime?: string;
+  }) => {
+    const base = {
+      kind: 'api_flow' as const,
+      request_id: requestId,
+      route: '/api/upload',
+      feature: 'file_upload',
+      user_id: null as string | null,
+      outcome: args.outcome,
+      status_code: args.status_code,
+      duration_ms: Date.now() - started,
+      client_trace_id: clientTraceId,
+      upload_file_bytes: args.upload_file_bytes,
+      upload_mime: args.upload_mime,
+    };
+    if (args.error) {
+      const s = serializeErrorSafe(args.error);
+      logApiFlow({
+        ...base,
+        error_type: s.error_type,
+        error_code: s.error_code,
+        error_message_safe: s.error_message_safe,
+      });
+    } else {
+      logApiFlow(base);
+    }
+  };
+
   if (req.method !== 'POST') {
+    flow({ outcome: 'client_error', status_code: 405 });
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const rl = checkRateLimit(`upload:${ipFromRequest(req)}`, { maxRequests: 15, windowMs: 86_400_000 });
+  if (!rl.allowed) {
+    flow({ outcome: 'rate_limited', status_code: 429 });
+    return res.status(429).json({ error: 'Daily upload limit reached. Sign in or upgrade to Pro for unlimited uploads.' });
   }
 
   try {
@@ -56,6 +108,7 @@ export default async function handler(
     const file = Array.isArray(files.file) ? files.file[0] : files.file;
 
     if (!file) {
+      flow({ outcome: 'client_error', status_code: 400 });
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
@@ -76,11 +129,24 @@ export default async function handler(
     } else {
       // Clean up temp file
       fs.unlinkSync(file.filepath);
+      flow({
+        outcome: 'client_error',
+        status_code: 400,
+        upload_file_bytes: file.size,
+        upload_mime: fileType || 'unknown',
+      });
       return res.status(400).json({ error: 'Unsupported file type' });
     }
 
     // Clean up temp file
     fs.unlinkSync(file.filepath);
+
+    flow({
+      outcome: 'success',
+      status_code: 200,
+      upload_file_bytes: file.size,
+      upload_mime: fileType || 'unknown',
+    });
 
     return res.status(200).json({
       success: true,
@@ -90,16 +156,17 @@ export default async function handler(
       extractedText,
     });
   } catch (error: any) {
-    console.error('Upload API Error:', error);
-    console.error('Error stack:', error.stack);
-    
-    // Clean up any temp files if they exist
+    flow({ outcome: 'server_error', status_code: 500, error });
+
     try {
       if (error.filepath && fs.existsSync(error.filepath)) {
         fs.unlinkSync(error.filepath);
       }
     } catch (cleanupError) {
-      console.error('Cleanup error:', cleanupError);
+      createLogger(requestId).warn('upload_temp_cleanup_failed', {
+        feature: 'file_upload',
+        ...serializeErrorSafe(cleanupError),
+      });
     }
     
     return res.status(500).json({

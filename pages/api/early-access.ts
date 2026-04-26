@@ -1,18 +1,44 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { Resend } from 'resend';
+import { withTimeout } from '@/lib/resilience';
+import { createLogger } from '@/lib/logger';
+import { getInboundRequestIdFromPagesApi } from '@/lib/tracing/requestId';
+import { checkRateLimit, ipFromRequest } from '@/lib/rateLimit';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
+const RESEND_TIMEOUT_MS = 10_000;
+
+function escapeHtml(str: string | undefined | null): string {
+  if (!str) return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
+  const requestId = getInboundRequestIdFromPagesApi(req);
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  const rl = checkRateLimit(`early-access:${ipFromRequest(req)}`, { maxRequests: 3, windowMs: 60_000 });
+  if (!rl.allowed) {
+    return res.status(429).json({ error: 'Too many requests. Please wait a moment and try again.' });
+  }
+
   try {
-    const { email, name, firm, message } = req.body;
+    const { email: rawEmail, name: rawName, firm: rawFirm, message: rawMessage } = req.body;
+    const email = rawEmail;
+    const name = escapeHtml(rawName);
+    const firm = escapeHtml(rawFirm);
+    const message = escapeHtml(rawMessage);
 
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
@@ -24,8 +50,7 @@ export default async function handler(
       return res.status(400).json({ error: 'Invalid email format' });
     }
 
-    // Send notification email to you (the founder)
-    const notificationEmail = await resend.emails.send({
+    const notificationEmail = await withTimeout(resend.emails.send({
       from: 'SmartProBono <notifications@smartprobono.org>',
       to: ['bferrell@smartprobono.org'], // Your email
       subject: 'New Waitlist Signup - SmartProBono',
@@ -52,10 +77,9 @@ export default async function handler(
           </p>
         </div>
       `,
-    });
+    }), RESEND_TIMEOUT_MS);
 
-    // Send confirmation email to the user
-    const confirmationEmail = await resend.emails.send({
+    const confirmationEmail = await withTimeout(resend.emails.send({
       from: 'SmartProBono <hello@smartprobono.org>',
       to: [email],
       subject: 'Thanks for joining the SmartProBono waitlist!',
@@ -98,14 +122,12 @@ export default async function handler(
           </div>
         </div>
       `,
-    });
+    }), RESEND_TIMEOUT_MS);
 
-    console.log('Early access emails sent:', {
-      notification: notificationEmail.data?.id,
-      confirmation: confirmationEmail.data?.id,
-      email: email,
-      name: name || 'Not provided',
-      firm: firm || 'Not provided'
+    const log = createLogger(requestId);
+    log.info('Early access emails sent', {
+      notificationId: notificationEmail.data?.id,
+      confirmationId: confirmationEmail.data?.id,
     });
 
     return res.status(200).json({
@@ -115,11 +137,11 @@ export default async function handler(
     });
 
   } catch (error: any) {
-    console.error('Early access email error:', error);
+    const log = createLogger(requestId);
+    log.error('Early access email error', { error: error?.message ?? String(error) });
     
-    // If Resend is not configured, still return success for demo purposes
     if (error.message?.includes('API key') || !process.env.RESEND_API_KEY) {
-      console.log('Resend not configured - returning demo response');
+      log.warn('Resend not configured — returning demo response');
       return res.status(200).json({
         success: true,
         message: 'Early access request received! (Demo mode - emails will be sent when Resend is configured)',

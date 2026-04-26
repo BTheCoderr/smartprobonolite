@@ -1,13 +1,16 @@
 # SmartProBono Lite ⚖️
 
-**AI-Powered Legal Intake Assistant for Small Law Firms**
+**Plain-English legal help and guided legal action**
 
-SmartProBono Lite is a Next.js application that helps small law firms and legal aid offices automate client intake and document drafting using AI. Built with modern web technologies and designed for real-world legal practice.
+SmartProBono Lite is a Next.js app that helps people understand documents, chat with Ermi for next steps and drafts, generate downloadable output, and follow guided workflows (including DIY record-clearing prep and a Rhode Island eviction pilot). Attorneys can use the authenticated dashboard for persistent intake and drafts.
 
 ## 🔗 Live Demo
 
-- **Demo (no data saved)**: https://smartprobonolite.netlify.app/demo
+- **Public tools workspace** (upload, Ermi chat, output — no login): https://smartprobonolite.netlify.app/tools  
+  (Legacy `/demo` URL redirects here.)
+- **Home / legal toolbox**: https://smartprobonolite.netlify.app/
 - **Pilot Dashboard (auth + persistence)**: https://smartprobonolite.netlify.app/dashboard
+- **Rhode Island eviction pilot**: https://smartprobonolite.netlify.app/ri/eviction/intake
 - **Repo**: https://github.com/BTheCoderr/smartprobonolite
 
 ## 📚 Security & Pilot Docs

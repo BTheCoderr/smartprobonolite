@@ -21,6 +21,19 @@ AI_PROVIDER=groq
 # Resend for email notifications
 RESEND_API_KEY=your_resend_api_key_here
 
+# Stripe webhook and production billing
+
+See [docs/STRIPE_PRODUCTION.md](docs/STRIPE_PRODUCTION.md) for webhook URL, events list, and operational notes.
+
+# ===== STRIPE (monetization) =====
+STRIPE_SECRET_KEY=sk_live_or_test_...
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_live_or_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+# Create a recurring Price in Stripe Dashboard → copy price_...
+STRIPE_PRICE_ID_PRO=price_...
+# Used for checkout success/cancel URLs (set in production, e.g. https://yourapp.netlify.app)
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+
 # ===== DEVELOPMENT =====
 NODE_ENV=development
 ```

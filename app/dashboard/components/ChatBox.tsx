@@ -1,13 +1,18 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { supabase } from '@/lib/supabaseClient';
 import { captureEvent } from '@/lib/posthogClient';
+import { consumeErmiHandoff } from '@/lib/ermiHandoff';
+import { getAuthHeaders } from '@/lib/auth/getAuthHeaders';
+import { fetchWithTimeout, isTimeoutError } from '@/lib/resilience';
 
 type Message = {
   role: 'user' | 'assistant';
   content: string;
   timestamp: string;
+  isError?: boolean;
+  isDegraded?: boolean;
+  degradation?: { llm?: boolean; rag?: boolean; rag_circuit_open?: boolean };
 };
 
 export type RiIntakeContext = {
@@ -28,6 +33,8 @@ interface ChatBoxProps {
   assistantMode?: 'legacy' | 'ri_eviction';
   /** Intake context for RI eviction mode (from buildGuidance). Pass when assistantMode is 'ri_eviction' (default). */
   intakeContext?: RiIntakeContext | null;
+  /** When false, skip loading session handoff from other tools (testing). Default true in legacy mode. */
+  consumeSessionHandoff?: boolean;
 }
 
 const RI_INITIAL_MESSAGE =
@@ -43,12 +50,11 @@ export default function ChatBox({
   extractButtonRef,
   assistantMode = 'ri_eviction',
   intakeContext = null,
+  consumeSessionHandoff = true,
 }: ChatBoxProps) {
   const isRiMode = assistantMode === 'ri_eviction';
   const initialMessage = isRiMode ? RI_INITIAL_MESSAGE : LEGACY_INITIAL_MESSAGE;
-
-  // Check if user is authenticated - if not, this is demo mode and should reset on refresh
-  const [isDemoMode, setIsDemoMode] = useState(true);
+  const [sessionHandoff, setSessionHandoff] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
@@ -61,19 +67,6 @@ export default function ChatBox({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [hasMounted, setHasMounted] = useState(false);
 
-  // Check authentication status on mount
-  useEffect(() => {
-    const checkAuth = async () => {
-      if (supabase) {
-        const { data: { session } } = await supabase.auth.getSession();
-        setIsDemoMode(!session);
-      } else {
-        setIsDemoMode(true);
-      }
-    };
-    checkAuth();
-  }, []);
-
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -85,6 +78,22 @@ export default function ChatBox({
   useEffect(() => {
     setHasMounted(true);
   }, []);
+
+  useEffect(() => {
+    if (isRiMode || !consumeSessionHandoff) return;
+    const h = consumeErmiHandoff();
+    if (h?.text) {
+      const label =
+        h.source === 'expungement'
+          ? 'Expungement prep'
+          : h.source === 'document'
+            ? 'Document understanding'
+            : h.source === 'output'
+              ? 'Generated output'
+              : 'Previous step';
+      setSessionHandoff(`[${label}]\n${h.text}`);
+    }
+  }, [isRiMode, consumeSessionHandoff]);
 
   useEffect(() => {
     onTypingChange?.(loading);
@@ -158,25 +167,23 @@ export default function ChatBox({
     });
 
     try {
-      // Get auth token if available (only if supabase is configured)
-      let headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (supabase) {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.access_token) {
-          headers['Authorization'] = `Bearer ${session.access_token}`;
-        }
-      }
+      const headers = await getAuthHeaders();
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          messages: [...messages, userMessage],
-          uploadedText: isRiMode ? undefined : (uploadedText || undefined),
-          mode: isRiMode ? 'ri_eviction' : 'chat',
-          intakeContext: isRiMode ? intakeContext : undefined,
-        }),
-      });
+      const response = await fetchWithTimeout(
+        '/api/chat',
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            messages: [...messages, userMessage],
+            uploadedText: isRiMode ? undefined : (uploadedText || undefined),
+            mode: isRiMode ? 'ri_eviction' : 'chat',
+            intakeContext: isRiMode ? intakeContext : undefined,
+            handoffContext: !isRiMode ? sessionHandoff || undefined : undefined,
+          }),
+        },
+        45_000,
+      );
 
       const data = await response.json();
 
@@ -188,6 +195,8 @@ export default function ChatBox({
         role: 'assistant',
         content: data.message,
         timestamp: new Date().toISOString(),
+        ...(data.degraded && { isDegraded: true }),
+        ...(data.degradation && { degradation: data.degradation }),
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -195,6 +204,7 @@ export default function ChatBox({
       captureEvent('chat_message_received', {
         mode: 'chat',
         message_length: data.message?.length ?? 0,
+        degraded: !!data.degraded,
       });
 
       // If response looks like generated content, pass it to output viewer
@@ -207,15 +217,19 @@ export default function ChatBox({
       }
     } catch (error: any) {
       console.error('Chat error:', error);
+      const msg = isTimeoutError(error)
+        ? 'The request took too long. Please try again.'
+        : 'Sorry, I encountered an error. Please try again.';
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
-          content: 'Sorry, I encountered an error. Please try again.',
+          content: msg,
           timestamp: new Date().toISOString(),
+          isError: true,
         },
       ]);
-      captureEvent('chat_error', { message: error.message, mode: 'chat' });
+      captureEvent('chat_error', { message: error.message, mode: 'chat', timeout: isTimeoutError(error) });
     } finally {
       setLoading(false);
       onTypingChange?.(false);
@@ -247,24 +261,22 @@ export default function ChatBox({
     setMessages((prev) => [...prev, userMessage]);
 
     try {
-      // Get auth token if available (only if supabase is configured)
-      let headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (supabase) {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.access_token) {
-          headers['Authorization'] = `Bearer ${session.access_token}`;
-        }
-      }
+      const headers = await getAuthHeaders();
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          messages: [...messages, userMessage],
-          uploadedText,
-          mode: 'extract',
-        }),
-      });
+      const response = await fetchWithTimeout(
+        '/api/chat',
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            messages: [...messages, userMessage],
+            uploadedText,
+            mode: 'extract',
+            handoffContext: sessionHandoff || undefined,
+          }),
+        },
+        45_000,
+      );
 
       const data = await response.json();
 
@@ -276,6 +288,8 @@ export default function ChatBox({
         role: 'assistant',
         content: data.message,
         timestamp: new Date().toISOString(),
+        ...(data.degraded && { isDegraded: true }),
+        ...(data.degradation && { degradation: data.degradation }),
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -290,15 +304,19 @@ export default function ChatBox({
       }
     } catch (error: any) {
       console.error('Extract error:', error);
+      const msg = isTimeoutError(error)
+        ? 'The extraction request took too long. Please try again.'
+        : 'Sorry, I encountered an error extracting information. Please try again.';
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
-          content: 'Sorry, I encountered an error extracting information. Please try again.',
+          content: msg,
           timestamp: new Date().toISOString(),
+          isError: true,
         },
       ]);
-      captureEvent('intake_extract_failed', { message: error.message });
+      captureEvent('intake_extract_failed', { message: error.message, timeout: isTimeoutError(error) });
     } finally {
       setLoading(false);
       onTypingChange?.(false);
@@ -314,6 +332,20 @@ export default function ChatBox({
 
   return (
     <div className="bg-white rounded-xl shadow-md overflow-hidden flex flex-col h-full border border-gray-200">
+      {sessionHandoff && !isRiMode && (
+        <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-950 flex justify-between items-start gap-2">
+          <span>
+            Using context from another SmartProBono tool. Ermi will factor it into replies until you dismiss it.
+          </span>
+          <button
+            type="button"
+            className="underline shrink-0 text-amber-900"
+            onClick={() => setSessionHandoff(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {/* Header */}
       <div className={`text-white px-6 py-4 flex items-center justify-between ${isRiMode ? 'bg-gradient-to-r from-spb-blue to-spb-blue/90' : 'bg-gradient-to-r from-primary-600 to-primary-700'}`}>
         <div className="flex items-center gap-2">
@@ -340,29 +372,58 @@ export default function ChatBox({
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar bg-gray-50">
-        {messages.map((message, index) => (
-          <div
-            key={index}
-            className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
+        {messages.map((message, index) => {
+          const isErrorMsg = message.role === 'assistant' && message.isError;
+          return (
             <div
-              className={`max-w-[80%] rounded-lg px-4 py-3 ${
-                message.role === 'user'
-                  ? 'bg-primary-600 text-white'
-                  : 'bg-white text-gray-800 shadow-sm border border-gray-200'
-              }`}
+              key={index}
+              className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
-              <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-              <p
-                className={`text-xs mt-1 ${
-                  message.role === 'user' ? 'text-primary-100' : 'text-gray-400'
+              <div
+                className={`max-w-[80%] rounded-lg px-4 py-3 ${
+                  message.role === 'user'
+                    ? 'bg-primary-600 text-white'
+                    : isErrorMsg
+                      ? 'bg-red-50 text-red-800 border border-red-200'
+                      : 'bg-white text-gray-800 shadow-sm border border-gray-200'
                 }`}
               >
-                {hasMounted ? new Date(message.timestamp).toLocaleTimeString() : '--:--'}
-              </p>
+                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                {message.isDegraded && (
+                  <p className="mt-1 text-xs text-amber-700">
+                    {message.degradation?.rag && !message.degradation?.llm
+                      ? 'Reference retrieval is temporarily limited; answers may be less grounded in local materials.'
+                      : message.degradation?.rag && message.degradation?.llm
+                        ? 'Ermi is in limited mode and reference retrieval is degraded.'
+                        : 'Ermi is running in limited mode right now.'}
+                  </p>
+                )}
+                {isErrorMsg && (
+                  <button
+                    type="button"
+                    className="mt-2 text-xs font-medium text-red-700 underline hover:text-red-900"
+                    onClick={() => {
+                      const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+                      if (lastUserMsg) {
+                        setMessages((prev) => prev.filter((_, i) => i !== index));
+                        void handleSendMessage(lastUserMsg.content);
+                      }
+                    }}
+                  >
+                    Try again
+                  </button>
+                )}
+                <p
+                  className={`text-xs mt-1 ${
+                    message.role === 'user' ? 'text-primary-100' : isErrorMsg ? 'text-red-400' : 'text-gray-400'
+                  }`}
+                >
+                  {hasMounted ? new Date(message.timestamp).toLocaleTimeString() : '--:--'}
+                </p>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         
         {loading && (
           <div className="flex justify-start">

@@ -1,23 +1,35 @@
-import { posthog } from './posthogClient';
+import { getAuthHeaders } from '@/lib/auth/getAuthHeaders';
+import { fetchWithTimeout } from '@/lib/resilience';
 
-export type SmartProBonoEvent =
-  | { name: 'signup_started'; props?: { source?: 'landing' | 'invite' | string } }
-  | { name: 'signup_completed'; props?: { plan?: 'Free' | 'Pro' } }
-  | { name: 'intake_started'; props: { case_type: string } }
-  | { name: 'intake_completed'; props: { case_type: string; duration_ms: number } }
-  | { name: 'doc_generated'; props: { template: string; case_type: string } }
-  | { name: 'doc_downloaded'; props: { template: string; format: 'pdf' | 'docx' } }
-  | { name: 'billing_subscribed'; props: { plan: string; seats: number } }
-  | { name: 'invite_sent'; props?: { role?: 'paralegal' | 'attorney' | string } };
+export { ANALYTICS_EVENTS, type AnalyticsEventName } from '@/lib/analytics/eventNames';
 
-export function captureEvent<E extends SmartProBonoEvent>(event: E) {
+/**
+ * Product analytics → Supabase via POST /api/events (App Router).
+ * Prefer names from ANALYTICS_EVENTS.
+ */
+export async function trackEvent(eventType: string, metadata: Record<string, unknown> = {}) {
   try {
-    posthog.capture(event.name, event.props);
-  } catch (error) {
-    if (process.env.NODE_ENV === 'development') {
-      console.error('PostHog capture failed:', error);
+    const headers = await getAuthHeaders();
+    const res = await fetchWithTimeout(
+      '/api/events',
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          event_name: eventType,
+          properties: metadata,
+        }),
+      },
+      5_000,
+    );
+    if (!res.ok) {
+      const snippet = await res.text().catch(() => '');
+      console.warn('[trackEvent]', eventType, 'HTTP', res.status, snippet.slice(0, 200));
     }
+  } catch (e) {
+    console.warn('[trackEvent]', eventType, 'failed', e instanceof Error ? e.message : e);
   }
 }
 
-
+/** Alias for legacy imports — prefer `trackEvent`. */
+export const trackClientEvent = trackEvent;

@@ -1,21 +1,35 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { validateFileType, formatFileSize } from '@/lib/utils/textExtraction';
+import { validateFileType } from '@/lib/utils/textExtraction';
 import { captureEvent } from '@/lib/posthogClient';
+import { useSubscription } from '@/contexts/SubscriptionContext';
+import { canFreeUpload, incrementFreeUploadCount } from '@/lib/monetization/limits';
+import { ANALYTICS_EVENTS, trackEvent } from '@/lib/events';
+import { fetchWithTimeout, isTimeoutError } from '@/lib/resilience';
+import { clientTraceHeaders } from '@/lib/auth/getAuthHeaders';
+import { StatusMessage } from '@/components/ui/StatusMessage';
 
 interface FileUploaderProps {
   onFileUploaded: (text: string, fileName: string) => void;
 }
 
 export default function FileUploader({ onFileUploaded }: FileUploaderProps) {
+  const { isPro, user, openUpgrade } = useSubscription();
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
+  const [uploadSuccess, setUploadSuccess] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = async (file: File) => {
     setError('');
+    setUploadSuccess(false);
+
+    if (!isPro && !user && !canFreeUpload()) {
+      openUpgrade('daily_upload_limit');
+      return;
+    }
 
     if (!validateFileType(file)) {
       setError('Unsupported file type. Please upload TXT, PDF, or DOCX files.');
@@ -38,10 +52,11 @@ export default function FileUploader({ onFileUploaded }: FileUploaderProps) {
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const response = await fetchWithTimeout(
+        '/api/upload',
+        { method: 'POST', body: formData, headers: clientTraceHeaders() },
+        30_000,
+      );
 
       const data = await response.json();
 
@@ -49,7 +64,18 @@ export default function FileUploader({ onFileUploaded }: FileUploaderProps) {
         throw new Error(data.error || 'Upload failed');
       }
 
+      const meta = {
+        file_name: data.fileName,
+        text_length: data.extractedText?.length ?? 0,
+      };
+      void trackEvent(ANALYTICS_EVENTS.documentUploaded, meta);
+      if (!isPro && !user) {
+        incrementFreeUploadCount();
+      }
+
       onFileUploaded(data.extractedText, data.fileName);
+      setUploadSuccess(true);
+      setTimeout(() => setUploadSuccess(false), 3000);
       captureEvent('intake_completed', {
         file_name: data.fileName,
         file_type: data.fileType,
@@ -58,7 +84,11 @@ export default function FileUploader({ onFileUploaded }: FileUploaderProps) {
       });
     } catch (error: any) {
       console.error('Upload error:', error);
-      setError(error.message || 'Failed to upload file');
+      setError(
+        isTimeoutError(error)
+          ? 'The upload took too long. Please try again with a smaller file or check your connection.'
+          : error.message || 'Failed to upload file',
+      );
       captureEvent('intake_failed', {
         message: error.message,
         file_name: file.name,
@@ -168,8 +198,14 @@ export default function FileUploader({ onFileUploaded }: FileUploaderProps) {
       </div>
 
       {error && (
-        <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-          <p className="text-sm text-red-800">{error}</p>
+        <div className="mt-4">
+          <StatusMessage variant="error" message={error} onDismiss={() => setError('')} />
+        </div>
+      )}
+
+      {uploadSuccess && (
+        <div className="mt-4">
+          <StatusMessage variant="success" message="File uploaded successfully" />
         </div>
       )}
 

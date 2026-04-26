@@ -7,6 +7,27 @@ import {
 } from '@/lib/prompts/riEvictionPrompt';
 import { EMBEDDED_MATERIALS } from '@/lib/ri/embeddedMaterials';
 import { supabaseAdmin } from '@/lib/supabaseClient';
+import { checkRateLimit, ipFromRequest } from '@/lib/rateLimit';
+import { embedText } from '@/lib/embeddings/openai';
+import { buildRetrievalContextBlock } from '@/lib/rag/buildRetrievalContext';
+import { createClient } from '@supabase/supabase-js';
+import { fetchWithTimeout, withRetry } from '@/lib/resilience';
+import {
+  createLogger,
+  getClientTraceIdFromPagesApi,
+  getRequestIdFromPagesApi,
+  logApiFlow,
+  resolveSupabaseUserIdFromRequest,
+  serializeErrorSafe,
+} from '@/lib/logger';
+import {
+  CIRCUIT_CONFIG,
+  CIRCUIT_NAMES,
+  circuitIsOpen,
+  circuitRecordFailure,
+  circuitRecordSuccess,
+  isRetryableUpstreamStatus,
+} from '@/lib/circuitBreaker';
 
 type Message = {
   role: 'user' | 'assistant' | 'system';
@@ -19,23 +40,120 @@ function getRiMaterialsExcerpts(): string {
     .join('\n\n---\n\n');
 }
 
+async function fetchRagContext(
+  query: string,
+  requestId: string,
+): Promise<{ block: string; ragDegraded: boolean; ragCircuitOpen: boolean }> {
+  const name = CIRCUIT_NAMES.RAG_PIPELINE;
+  const cfg = CIRCUIT_CONFIG[name];
+
+  if (circuitIsOpen(name, cfg)) {
+    createLogger(requestId).warn('rag_skipped_circuit_open', { feature: 'chat' });
+    return { block: '', ragDegraded: true, ragCircuitOpen: true };
+  }
+
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key || !process.env.OPENAI_API_KEY) {
+    return { block: '', ragDegraded: false, ragCircuitOpen: false };
+  }
+
+  try {
+    const block = await withRetry(
+      async () => {
+        const embedding = await embedText(query, { requestId });
+        const sb = createClient(url, key);
+        const { data, error } = await sb.rpc('match_legal_chunks', {
+          query_embedding: embedding,
+          match_count: 5,
+          filter_jurisdiction: 'RI',
+        });
+        if (error) throw new Error(error.message || 'match_legal_chunks');
+        if (!data?.length) return '';
+        return buildRetrievalContextBlock(data);
+      },
+      { maxAttempts: 2 },
+    );
+    circuitRecordSuccess(name, requestId);
+    return { block: block || '', ragDegraded: false, ragCircuitOpen: false };
+  } catch {
+    circuitRecordFailure(name, cfg, requestId);
+    return { block: '', ragDegraded: true, ragCircuitOpen: false };
+  }
+}
+
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
+  const started = Date.now();
+  const requestId = getRequestIdFromPagesApi(req);
+  const clientTraceId = getClientTraceIdFromPagesApi(req);
+
+  const flow = (args: {
+    outcome: 'success' | 'client_error' | 'rate_limited' | 'server_error';
+    status_code: number;
+    user_id?: string | null;
+    error?: unknown;
+    degraded_mode?: boolean;
+    chat_mode?: string;
+    message_count?: number;
+    ai_provider?: string;
+  }) => {
+    const user_id = args.user_id ?? null;
+    const base = {
+      kind: 'api_flow' as const,
+      request_id: requestId,
+      route: '/api/chat',
+      feature: 'chat',
+      user_id,
+      outcome: args.outcome,
+      status_code: args.status_code,
+      duration_ms: Date.now() - started,
+      client_trace_id: clientTraceId,
+      degraded_mode: args.degraded_mode,
+      chat_mode: args.chat_mode,
+      message_count: args.message_count,
+      ai_provider: args.ai_provider,
+    };
+    if (args.error) {
+      const s = serializeErrorSafe(args.error);
+      logApiFlow({
+        ...base,
+        error_type: s.error_type,
+        error_code: s.error_code,
+        error_message_safe: s.error_message_safe,
+      });
+    } else {
+      logApiFlow(base);
+    }
+  };
+
   if (req.method !== 'POST') {
+    flow({ outcome: 'client_error', status_code: 405 });
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  const userId = await resolveSupabaseUserIdFromRequest(req);
+
+  const rl = checkRateLimit(`chat:${ipFromRequest(req)}`, { maxRequests: 20, windowMs: 60_000 });
+  if (!rl.allowed) {
+    flow({ outcome: 'rate_limited', status_code: 429, user_id: userId });
+    return res.status(429).json({ error: 'Too many requests. Please wait a moment and try again.' });
+  }
+
   try {
-    const { messages, uploadedText, mode, intakeContext } = req.body as {
+    const { messages, uploadedText, mode, intakeContext, handoffContext } = req.body as {
       messages: Message[];
       uploadedText?: string;
       mode?: 'chat' | 'extract' | 'ri_eviction';
       intakeContext?: RiIntakeContext | null;
+      /** Optional context from another tool (document prep, expungement summary, etc.). */
+      handoffContext?: string;
     };
 
     if (!messages || !Array.isArray(messages)) {
+      flow({ outcome: 'client_error', status_code: 400, user_id: userId });
       return res.status(400).json({ error: 'Messages array is required' });
     }
 
@@ -47,6 +165,8 @@ export default async function handler(
 
     // Determine system prompt based on mode
     let systemPrompt: string;
+    let ragDegraded = false;
+    let ragCircuitOpen = false;
     if (mode === 'ri_eviction') {
       const riExcerpts = getRiMaterialsExcerpts();
       const contextPayload = buildRiEvictionContextPayload(intakeContext ?? null, riExcerpts);
@@ -55,97 +175,157 @@ export default async function handler(
       systemPrompt = extractionPrompt(uploadedText);
     } else {
       systemPrompt = intakePrompt(context, uploadedText);
+
+      const lastUserContent = messages[messages.length - 1]?.content ?? '';
+      const rag = await fetchRagContext(lastUserContent, requestId);
+      ragDegraded = rag.ragDegraded;
+      ragCircuitOpen = rag.ragCircuitOpen;
+      if (rag.block) {
+        systemPrompt += `\n\n---\nRetrieved legal guidance (use this to ground your response):\n${rag.block}`;
+      }
+    }
+
+    if (
+      handoffContext &&
+      typeof handoffContext === 'string' &&
+      handoffContext.trim().length > 0 &&
+      mode !== 'ri_eviction'
+    ) {
+      const capped = handoffContext.slice(0, 12000);
+      systemPrompt += `\n\n---\nContext the user brought from another SmartProBono screen (they may refer to this):\n${capped}`;
     }
 
     // Get the latest user message
     const userMessage = messages[messages.length - 1];
     if (!userMessage || userMessage.role !== 'user') {
+      flow({
+        outcome: 'client_error',
+        status_code: 400,
+        user_id: userId,
+        chat_mode: mode,
+        message_count: recentMessages.length,
+      });
       return res.status(400).json({ error: 'Last message must be from user' });
     }
 
-    // Use Hugging Face Inference API (FREE!)
     const aiProvider = process.env.AI_PROVIDER || 'huggingface';
-    console.log('AI Provider:', aiProvider);
-    console.log('User message:', userMessage.content);
-    console.log('System prompt:', systemPrompt);
-    console.log('Recent messages:', JSON.stringify(recentMessages, null, 2));
 
     let responseText: string;
+    let llmDegraded = false;
 
     if (aiProvider === 'huggingface') {
-      // Hugging Face Inference API - FREE tier
-      const hfResponse = await fetch(
-        'https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium',
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY || 'hf_demo_token'}`,
-            'Content-Type': 'application/json',
-          },
-          method: 'POST',
-          body: JSON.stringify({
-            inputs: `${systemPrompt}\n\nUser: ${userMessage.content}\nErmi:`,
-            parameters: {
-              max_new_tokens: 200,
-              temperature: 0.7,
-              return_full_text: false,
+      const hfName = CIRCUIT_NAMES.HUGGINGFACE_LLM;
+      const hfCfg = CIRCUIT_CONFIG[hfName];
+      try {
+        if (circuitIsOpen(hfName, hfCfg)) {
+          responseText = generateFallbackResponse(userMessage.content, mode);
+          llmDegraded = true;
+        } else {
+          const hfResponse = await fetchWithTimeout(
+            'https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium',
+            {
+              headers: {
+                Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY || 'hf_demo_token'}`,
+                'Content-Type': 'application/json',
+              },
+              method: 'POST',
+              body: JSON.stringify({
+                inputs: `${systemPrompt}\n\nUser: ${userMessage.content}\nErmi:`,
+                parameters: {
+                  max_new_tokens: 200,
+                  temperature: 0.7,
+                  return_full_text: false,
+                },
+              }),
             },
-          }),
+            15_000,
+          );
+
+          if (!hfResponse.ok) {
+            if (isRetryableUpstreamStatus(hfResponse.status)) {
+              circuitRecordFailure(hfName, hfCfg, requestId);
+            }
+            responseText = generateFallbackResponse(userMessage.content, mode);
+            llmDegraded = true;
+          } else {
+            const hfData = await hfResponse.json();
+            responseText =
+              hfData[0]?.generated_text ||
+              'I apologize, but I need a moment to process that. Could you try rephrasing your question?';
+            if (!hfData[0]?.generated_text) llmDegraded = true;
+            else circuitRecordSuccess(hfName, requestId);
+          }
         }
-      );
-
-      if (!hfResponse.ok) {
-        throw new Error(`Hugging Face API error: ${hfResponse.status}`);
+      } catch {
+        circuitRecordFailure(hfName, hfCfg, requestId);
+        responseText = generateFallbackResponse(userMessage.content, mode);
+        llmDegraded = true;
       }
-
-      const hfData = await hfResponse.json();
-      responseText = hfData[0]?.generated_text || 'I apologize, but I need a moment to process that. Could you try rephrasing your question?';
     } else if (aiProvider === 'groq') {
-      // Groq (also has free tier) – required for RI eviction assistant
+      const gqName = CIRCUIT_NAMES.GROQ_LLM;
+      const gqCfg = CIRCUIT_CONFIG[gqName];
       if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY.trim() === '') {
-        console.warn('GROQ_API_KEY is not set. Using fallback response.');
         responseText = generateFallbackResponse(userMessage.content, mode);
+        llmDegraded = true;
       } else {
-      const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            ...recentMessages.slice(0, -1).map(msg => ({ role: msg.role, content: msg.content })),
-            { role: 'user', content: userMessage.content },
-          ],
-          temperature: 0.7,
-          max_tokens: 2000,
-        }),
-      });
+        try {
+          if (circuitIsOpen(gqName, gqCfg)) {
+            responseText = generateFallbackResponse(userMessage.content, mode);
+            llmDegraded = true;
+          } else {
+            const groqResponse = await fetchWithTimeout(
+              'https://api.groq.com/openai/v1/chat/completions',
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+                },
+                body: JSON.stringify({
+                  model: 'llama-3.3-70b-versatile',
+                  messages: [
+                    { role: 'system', content: systemPrompt },
+                    ...recentMessages.slice(0, -1).map((msg) => ({ role: msg.role, content: msg.content })),
+                    { role: 'user', content: userMessage.content },
+                  ],
+                  temperature: 0.7,
+                  max_tokens: 2000,
+                }),
+              },
+              30_000,
+            );
 
-      if (!groqResponse.ok) {
-        const errorData = await groqResponse.json().catch(() => ({}));
-        console.error('Groq API Error:', groqResponse.status, errorData);
-        throw new Error(`Groq API error: ${groqResponse.status} - ${JSON.stringify(errorData)}`);
-      }
+            if (!groqResponse.ok) {
+              if (isRetryableUpstreamStatus(groqResponse.status)) {
+                circuitRecordFailure(gqName, gqCfg, requestId);
+              }
+              responseText = generateFallbackResponse(userMessage.content, mode);
+              llmDegraded = true;
+            } else {
+              const groqData = await groqResponse.json();
+              const aiResponse = groqData.choices?.[0]?.message?.content;
 
-      const groqData = await groqResponse.json();
-      console.log('Full Groq Response:', JSON.stringify(groqData, null, 2));
-      
-      const aiResponse = groqData.choices?.[0]?.message?.content;
-      console.log('Extracted AI Response:', aiResponse);
-      
-      if (!aiResponse || aiResponse.trim().length === 0) {
-        console.log('Empty response from Groq, using fallback');
-        responseText = generateFallbackResponse(userMessage.content, mode);
-      } else {
-        responseText = aiResponse;
-      }
+              if (!aiResponse || aiResponse.trim().length === 0) {
+                responseText = generateFallbackResponse(userMessage.content, mode);
+                llmDegraded = true;
+              } else {
+                responseText = aiResponse;
+                circuitRecordSuccess(gqName, requestId);
+              }
+            }
+          }
+        } catch {
+          circuitRecordFailure(gqName, gqCfg, requestId);
+          responseText = generateFallbackResponse(userMessage.content, mode);
+          llmDegraded = true;
+        }
       }
     } else {
-      // Fallback: Simple rule-based responses
       responseText = generateFallbackResponse(userMessage.content, mode);
+      llmDegraded = true;
     }
+
+    const degraded = llmDegraded || ragDegraded;
 
     // Save conversation to Supabase ONLY if user is authenticated with valid token
     // Demo mode (no auth) should NEVER save to database
@@ -153,15 +333,13 @@ export default async function handler(
       try {
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
-          // No valid auth token - this is demo mode, don't save
-          console.log('No valid auth token - skipping database save (demo mode)');
+          /* demo mode */
         } else {
           const token = authHeader.replace('Bearer ', '');
           const { data: { user }, error: authError } = await supabaseAdmin.auth.getUser(token);
           
           if (authError || !user) {
-            // Invalid token or no user - this is demo mode, don't save
-            console.log('Invalid auth token or no user - skipping database save (demo mode)');
+            /* demo mode */
           } else if (user) {
             // Valid authenticated user - save to their isolated chat
             const newMessages = [...recentMessages, { role: 'assistant', content: responseText }];
@@ -206,36 +384,51 @@ export default async function handler(
           }
         }
       } catch (dbError) {
-        console.log('Database save failed (non-critical):', dbError);
-        // Continue without failing the request
+        createLogger(requestId).warn('chat_db_save_failed', {
+          feature: 'chat',
+          user_id: userId,
+          ...serializeErrorSafe(dbError),
+        });
       }
-    } else {
-      // No auth header at all - definitely demo mode, don't save
-      console.log('No auth header - demo mode, not saving to database');
     }
+
+    flow({
+      outcome: 'success',
+      status_code: 200,
+      user_id: userId,
+      degraded_mode: degraded,
+      chat_mode: mode,
+      message_count: recentMessages.length,
+      ai_provider: aiProvider,
+    });
+
+    const degradation =
+      llmDegraded || ragDegraded
+        ? {
+            llm: llmDegraded,
+            rag: ragDegraded,
+            ...(ragCircuitOpen && { rag_circuit_open: true }),
+          }
+        : undefined;
 
     return res.status(200).json({
       message: responseText,
       success: true,
+      ...(degraded && { degraded: true }),
+      ...(degradation && { degradation }),
     });
   } catch (error: any) {
-    console.error('Chat API Error:', error);
-    
-    // Fallback response on error (preserve mode for RI eviction)
-    const body = req.body as { messages?: Message[]; mode?: string };
-    const lastContent = body.messages?.length ? (body.messages[body.messages.length - 1]?.content ?? '') : '';
-    const fallbackResponse = generateFallbackResponse(lastContent, body.mode ?? 'chat');
-    
-    return res.status(200).json({
-      message: fallbackResponse,
-      success: true,
+    flow({ outcome: 'server_error', status_code: 500, user_id: userId, error });
+
+    return res.status(500).json({
+      error: 'An error occurred while processing your request. Please try again.',
+      success: false,
     });
   }
 }
 
 // Simple fallback responses when AI isn't available
 function generateFallbackResponse(userMessage: string, mode?: string): string {
-  console.log('Using fallback response for:', userMessage);
 
   if (mode === 'ri_eviction') {
     return `Explanation:

@@ -1,14 +1,17 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useProfile } from '@/lib/hooks/useProfile';
+import { setErmiHandoff } from '@/lib/ermiHandoff';
 import ChatBox from './components/ChatBox';
 import FileUploader from './components/FileUploader';
 import OutputViewer from './components/OutputViewer';
 import { Card } from '@/components/ui';
 
 export default function DashboardPage() {
-  const { user, profile } = useProfile();
+  const router = useRouter();
+  useProfile();
   const [uploadedText, setUploadedText] = useState<string>('');
   const [generatedOutput, setGeneratedOutput] = useState<string>('');
   const [currentFileName, setCurrentFileName] = useState<string>('');
@@ -31,6 +34,15 @@ export default function DashboardPage() {
     // Trigger regeneration by sending a message to chat
     // This will be handled by ChatBox component
     setGeneratedOutput('');
+  };
+
+  const handleAskErmiAboutOutput = () => {
+    if (!generatedOutput.trim()) return;
+    setErmiHandoff({
+      source: 'output',
+      text: `The user has this text in the output panel:\n\n${generatedOutput.slice(0, 8000)}`,
+    });
+    router.push('/chat');
   };
 
   return (
@@ -75,6 +87,7 @@ export default function DashboardPage() {
 
             <div className="flex-1 min-h-0">
               <ChatBox
+                assistantMode="legacy"
                 uploadedText={uploadedText}
                 onOutputGenerated={handleOutputGenerated}
                 onTypingChange={handleTypingChange}
@@ -91,7 +104,11 @@ export default function DashboardPage() {
 
           {/* Right Column - Editor */}
           <div className="h-full">
-            <OutputViewer output={generatedOutput} onRegenerate={handleRegenerate} />
+            <OutputViewer
+              output={generatedOutput}
+              onRegenerate={handleRegenerate}
+              onAskErmiAboutOutput={handleAskErmiAboutOutput}
+            />
             
             {/* Typing Indicator */}
             {isTyping && (

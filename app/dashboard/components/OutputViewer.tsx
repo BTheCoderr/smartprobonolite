@@ -2,18 +2,55 @@
 
 import { useState } from 'react';
 import { captureEvent } from '@/lib/posthogClient';
+import { useSubscription } from '@/contexts/SubscriptionContext';
+import { ANALYTICS_EVENTS, trackEvent } from '@/lib/events';
+import { getAuthHeaders } from '@/lib/auth/getAuthHeaders';
+import { fetchWithTimeout, isTimeoutError } from '@/lib/resilience';
+import { StatusMessage } from '@/components/ui/StatusMessage';
 
 interface OutputViewerProps {
   output: string;
   onRegenerate?: () => void;
+  /** Navigate to chat with this output as Ermi context (set by parent via session handoff). */
+  onAskErmiAboutOutput?: () => void;
 }
 
-export default function OutputViewer({ output, onRegenerate }: OutputViewerProps) {
+const FREE_PRINT_WATERMARK =
+  'SmartProBono — Free tier preview. Upgrade for a clean print/PDF without this banner.';
+
+export default function OutputViewer({ output, onRegenerate, onAskErmiAboutOutput }: OutputViewerProps) {
+  const { isPro, openUpgrade } = useSubscription();
   const [downloading, setDownloading] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloadSuccess, setDownloadSuccess] = useState(false);
+  const [printWarning, setPrintWarning] = useState(false);
+
+  const handlePrint = () => {
+    if (!output) return;
+    setPrintWarning(false);
+    captureEvent('doc_print_requested', { output_length: output.length, tier: isPro ? 'pro' : 'free' });
+    const w = window.open('', '_blank');
+    if (!w) {
+      setPrintWarning(true);
+      return;
+    }
+    const banner = !isPro
+      ? `<div style="border:2px dashed #b45309;background:#fffbeb;padding:12px;margin-bottom:16px;font-size:13px;color:#78350f;">${FREE_PRINT_WATERMARK}</div>`
+      : '';
+    w.document.write(
+      `<!DOCTYPE html><html><head><title>SmartProBono output</title><style>body{font-family:system-ui,sans-serif;padding:1.5rem;white-space:pre-wrap;max-width:48rem;margin:0 auto;}</style></head><body>${banner}<h1 style="font-size:14px;color:#444;">Draft — for your review</h1><pre style="white-space:pre-wrap;font-family:inherit;">${output.replace(/</g, '&lt;')}</pre></body></html>`
+    );
+    w.document.close();
+    w.focus();
+    w.print();
+    w.close();
+  };
 
   const handleCopy = async () => {
     if (!output) return;
+    setCopyError(null);
 
     try {
       await navigator.clipboard.writeText(output);
@@ -23,7 +60,8 @@ export default function OutputViewer({ output, onRegenerate }: OutputViewerProps
         output_length: output.length,
       });
     } catch (error) {
-      console.error('Failed to copy:', error);
+      setCopyError('Could not copy to clipboard. Try selecting the text manually.');
+      setTimeout(() => setCopyError(null), 4000);
       captureEvent('doc_copy_failed', {
         message: (error as Error).message,
       });
@@ -33,45 +71,89 @@ export default function OutputViewer({ output, onRegenerate }: OutputViewerProps
   const handleDownload = async (format: 'docx' | 'txt') => {
     if (!output) return;
 
+    if (format === 'docx' && !isPro) {
+      openUpgrade('docx_export');
+      return;
+    }
+
+    if (format === 'txt') {
+      const freeWatermark = `[SmartProBono — Free tier preview — Upgrade for clean export]\n\n`;
+      const text = !isPro ? `${freeWatermark}${output}` : output;
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'smartprobono_output.txt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      void trackEvent(ANALYTICS_EVENTS.documentDownloaded, { format: 'txt', output_length: output.length, tier: isPro ? 'pro' : 'free' });
+      captureEvent('doc_downloaded', { format: 'txt', output_length: output.length });
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 3000);
+      return;
+    }
+
     setDownloading(true);
+    setDownloadError(null);
 
     try {
-      const response = await fetch('/api/generate-doc', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          documentType: 'Generated Document',
-          clientInfo: 'Generated from AI Assistant',
-          instructions: output,
-          format,
-        }),
-      });
+      const headers = await getAuthHeaders();
+      const response = await fetchWithTimeout(
+        '/api/generate-doc',
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            documentType: 'Generated Document',
+            clientInfo: 'Generated from AI Assistant',
+            instructions: output,
+            format: 'docx',
+          }),
+        },
+        45_000,
+      );
 
       if (!response.ok) {
-        throw new Error('Failed to generate document');
+        const errText = await response.text();
+        let msg = 'Failed to generate document';
+        try {
+          const j = JSON.parse(errText) as { error?: string };
+          if (j.error) msg = j.error;
+        } catch {
+          if (errText) msg = errText;
+        }
+        throw new Error(msg);
       }
 
-      // Create download link
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `smartprobono_output.${format}`;
+      a.download = 'smartprobono_output.docx';
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
 
+      void trackEvent(ANALYTICS_EVENTS.documentDownloaded, { format: 'docx', output_length: output.length, tier: 'pro' });
       captureEvent('doc_downloaded', {
-        format,
+        format: 'docx',
         output_length: output.length,
       });
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 3000);
     } catch (error: any) {
       console.error('Download error:', error);
-      alert('Failed to download document. Please try again.');
+      const msg = isTimeoutError(error)
+        ? 'The download request took too long. Please try again.'
+        : 'Failed to download document. Please try again.';
+      setDownloadError(msg);
       captureEvent('doc_download_failed', {
         message: error.message,
-        format,
+        format: 'docx',
+        timeout: isTimeoutError(error),
       });
     } finally {
       setDownloading(false);
@@ -128,18 +210,90 @@ export default function OutputViewer({ output, onRegenerate }: OutputViewerProps
               )}
             </button>
             <button
+              type="button"
+              onClick={() => handleDownload('txt')}
+              disabled={downloading}
+              title={!isPro ? 'Free export includes a preview watermark in the text' : undefined}
+              className="px-4 py-2 text-sm rounded-lg border border-white/40 text-white hover:bg-white/10 transition disabled:opacity-50 flex items-center gap-1"
+            >
+              Export TXT{!isPro ? ' (watermarked)' : ''}
+            </button>
+            <button
+              type="button"
               onClick={() => handleDownload('docx')}
               disabled={downloading}
+              title={!isPro ? 'Pro feature — click to upgrade' : undefined}
               className="px-4 py-2 text-sm bg-spb-blue text-white rounded-lg hover:bg-spb-blueDark transition disabled:opacity-50 flex items-center gap-1"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
-              Export DOCX
+              {!isPro ? 'Export DOCX (Pro)' : 'Export DOCX'}
             </button>
+            <button
+              type="button"
+              onClick={handlePrint}
+              disabled={downloading}
+              className="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 transition disabled:opacity-50"
+            >
+              Print / Save as PDF
+            </button>
+            {onAskErmiAboutOutput && (
+              <button
+                type="button"
+                onClick={onAskErmiAboutOutput}
+                className="px-4 py-2 text-sm rounded-lg border border-spb-blue text-spb-blue hover:bg-blue-50 transition"
+              >
+                Ask Ermi about this
+              </button>
+            )}
           </div>
         )}
       </div>
+
+      {copyError && (
+        <div className="px-6 pt-3">
+          <StatusMessage
+            variant="warning"
+            message={copyError}
+            onDismiss={() => setCopyError(null)}
+          />
+        </div>
+      )}
+
+      {downloadError && (
+        <div className="px-6 pt-3">
+          <StatusMessage
+            variant="error"
+            message={downloadError}
+            onDismiss={() => setDownloadError(null)}
+            action={{ label: 'Try again', onClick: () => void handleDownload('docx') }}
+          />
+        </div>
+      )}
+
+      {downloadSuccess && (
+        <div className="px-6 pt-3">
+          <StatusMessage variant="success" message="Document downloaded" />
+        </div>
+      )}
+
+      {printWarning && (
+        <div className="px-6 pt-3">
+          <StatusMessage
+            variant="warning"
+            message="Pop-up blocked. Please allow pop-ups for this site to print your output."
+            onDismiss={() => setPrintWarning(false)}
+          />
+        </div>
+      )}
+
+      {downloading && (
+        <div className="px-6 py-2 text-sm text-gray-600 flex items-center gap-2">
+          <div className="animate-spin rounded-full h-4 w-4 border-2 border-gray-300 border-t-gray-600" />
+          Generating document…
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6 custom-scrollbar bg-gray-50">

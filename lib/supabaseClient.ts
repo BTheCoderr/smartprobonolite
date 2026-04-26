@@ -21,6 +21,11 @@ export type Profile = {
   firm_name?: string;
   created_at: string;
   updated_at: string;
+  /** 'free' | 'pro' — set by Stripe webhook after subscription */
+  plan_tier?: string;
+  subscription_status?: string | null;
+  stripe_customer_id?: string | null;
+  stripe_subscription_id?: string | null;
 };
 
 export type Message = {

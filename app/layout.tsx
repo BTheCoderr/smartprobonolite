@@ -1,14 +1,15 @@
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
-import PostHogProvider from './providers/PostHogProvider';
-import ClientAuthListener from './client-auth-listener';
+import { AppProviders } from './providers/AppProviders';
+import { WebVitals } from '@/components/WebVitals';
 
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'SmartProBono Lite - AI Legal Assistant',
-  description: 'AI-powered intake assistant for small law firms',
+  title: 'SmartProBono — Legal help tools for everyday people',
+  description:
+    'Understand legal documents in plain English, chat with Ermi, generate drafts, and follow guided workflows—including DIY record-clearing prep and Rhode Island eviction help.',
 };
 
 export default function RootLayout({
@@ -19,10 +20,8 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={inter.className}>
-        <PostHogProvider>
-          <ClientAuthListener />
-          {children}
-        </PostHogProvider>
+        <WebVitals />
+        <AppProviders>{children}</AppProviders>
       </body>
     </html>
   );
