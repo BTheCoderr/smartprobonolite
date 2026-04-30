@@ -5,6 +5,28 @@ import { captureEvent } from '@/lib/posthogClient';
 import { consumeErmiHandoff } from '@/lib/ermiHandoff';
 import { getAuthHeaders } from '@/lib/auth/getAuthHeaders';
 import { fetchWithTimeout, isTimeoutError } from '@/lib/resilience';
+import {
+  AgentReviewPanel,
+  type AgentReview,
+} from '@/app/dashboard/components/agent-review';
+import AgentStreamProgress, {
+  emptyProgress,
+  type AgentProgressMap,
+} from '@/app/dashboard/components/AgentStreamProgress';
+import {
+  AGENT_ORDER,
+  parseSseRecord,
+  type StreamEvent,
+} from '@/lib/agents/streaming';
+
+/**
+ * When true, the dashboard ChatBox engages the six-agent LangGraph path AND
+ * subscribes to per-agent SSE progress so users see Intake → Research →
+ * Analysis → … light up live. Flip to `false` to instantly revert the
+ * dashboard to the legacy single-pass JSON path; the server already supports
+ * both paths in parallel.
+ */
+const ENABLE_AGENT_STREAMING = true;
 
 type Message = {
   role: 'user' | 'assistant';
@@ -13,6 +35,7 @@ type Message = {
   isError?: boolean;
   isDegraded?: boolean;
   degradation?: { llm?: boolean; rag?: boolean; rag_circuit_open?: boolean };
+  agentReview?: AgentReview;
 };
 
 export type RiIntakeContext = {
@@ -64,6 +87,12 @@ export default function ChatBox({
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  /**
+   * Live per-agent progress for the in-flight assistant turn. Cleared as
+   * soon as the assistant message is appended (so the stepper doesn't
+   * linger after the bubble renders).
+   */
+  const [streamProgress, setStreamProgress] = useState<AgentProgressMap | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [hasMounted, setHasMounted] = useState(false);
 
@@ -148,6 +177,121 @@ export default function ChatBox({
     return isLongEnough || hasDocumentPatterns;
   };
 
+  /**
+   * Apply a single SSE event to the live progress map. Returns the next
+   * map AND, if the event was `final`, the assistant Message to append.
+   *
+   * Pure-ish (it touches setStreamProgress only via the returned next-map)
+   * so the streaming loop stays trivially testable.
+   */
+  const advanceProgress = (
+    prev: AgentProgressMap,
+    event: StreamEvent,
+  ): { next: AgentProgressMap; final?: Message; error?: string } => {
+    if (event.type === 'agent_finished') {
+      const next: AgentProgressMap = {
+        ...prev,
+        [event.agent]: event.outcome === 'degraded' ? 'degraded' : 'done',
+      };
+      // Mark the next non-skipped, non-done agent as 'running' so the user
+      // sees a single in-flight indicator rather than a frozen list.
+      const idx = AGENT_ORDER.indexOf(event.agent);
+      for (let i = idx + 1; i < AGENT_ORDER.length; i += 1) {
+        const candidate = AGENT_ORDER[i];
+        if (next[candidate] === 'queued') {
+          next[candidate] = 'running';
+          break;
+        }
+      }
+      return { next };
+    }
+    if (event.type === 'agent_skipped') {
+      const next: AgentProgressMap = { ...prev, [event.agent]: 'skipped' };
+      // The skipped agent's slot won't fire a 'finished' event, so promote
+      // the following queued agent to 'running' here too.
+      const idx = AGENT_ORDER.indexOf(event.agent);
+      for (let i = idx + 1; i < AGENT_ORDER.length; i += 1) {
+        const candidate = AGENT_ORDER[i];
+        if (next[candidate] === 'queued') {
+          next[candidate] = 'running';
+          break;
+        }
+      }
+      return { next };
+    }
+    if (event.type === 'final') {
+      const review =
+        event.agentReview && typeof event.agentReview === 'object'
+          ? (event.agentReview as AgentReview)
+          : undefined;
+      const final: Message = {
+        role: 'assistant',
+        content: event.message,
+        timestamp: new Date().toISOString(),
+        ...(event.degraded && { isDegraded: true }),
+        ...(event.degradation && { degradation: event.degradation }),
+        ...(review && { agentReview: review }),
+      };
+      return { next: prev, final };
+    }
+    if (event.type === 'error') {
+      return { next: prev, error: event.fallbackMessage };
+    }
+    return { next: prev };
+  };
+
+  /**
+   * Drain a Server-Sent Events response body and dispatch each parsed
+   * event through `advanceProgress`. Returns the final assistant Message
+   * once the stream emits `final`, or throws when it terminates without one.
+   */
+  const consumeAgentStream = async (response: Response): Promise<Message> => {
+    if (!response.body) throw new Error('stream_no_body');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalMessage: Message | null = null;
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE record separator is a blank line (\n\n).
+        let sepIdx = buffer.indexOf('\n\n');
+        while (sepIdx !== -1) {
+          const record = buffer.slice(0, sepIdx);
+          buffer = buffer.slice(sepIdx + 2);
+          const event = parseSseRecord(record);
+          if (event) {
+            setStreamProgress((prev) => {
+              const base = prev ?? emptyProgress();
+              const { next, final, error } = advanceProgress(base, event);
+              if (final) finalMessage = final;
+              if (error) {
+                finalMessage = {
+                  role: 'assistant',
+                  content: error,
+                  timestamp: new Date().toISOString(),
+                  isError: true,
+                };
+              }
+              return next;
+            });
+          }
+          sepIdx = buffer.indexOf('\n\n');
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (!finalMessage) {
+      throw new Error('stream_ended_without_final');
+    }
+    return finalMessage;
+  };
+
   const handleSendMessage = async (messageText: string) => {
     if (!messageText.trim() || loading) return;
 
@@ -161,26 +305,109 @@ export default function ChatBox({
     setLoading(true);
     onTypingChange?.(true);
 
+    /**
+     * Stream when the user is in the RI eviction surface (where the agents
+     * path is the primary intent). Legacy 'chat' mode still uses the
+     * single-pass JSON path so that surface stays unchanged for now.
+     */
+    const useStreaming = ENABLE_AGENT_STREAMING && isRiMode;
+    if (useStreaming) {
+      setStreamProgress(emptyProgress());
+    }
+
     captureEvent('chat_message_sent', {
       source: uploadedText ? 'chat_with_upload' : 'chat_only',
       message_length: messageText.length,
+      ...(useStreaming && { streaming: true }),
     });
 
     try {
       const headers = await getAuthHeaders();
+      const body = JSON.stringify({
+        messages: [...messages, userMessage],
+        uploadedText: isRiMode ? undefined : uploadedText || undefined,
+        mode: isRiMode ? 'ri_eviction' : 'chat',
+        intakeContext: isRiMode ? intakeContext : undefined,
+        handoffContext: !isRiMode ? sessionHandoff || undefined : undefined,
+        ...(useStreaming && { use_agents: true, stream: true }),
+      });
 
+      if (useStreaming) {
+        // Plain fetch (no fetchWithTimeout): SSE responses are long-lived
+        // and the server-side circuit breakers + LangGraph timeouts already
+        // cap total runtime.
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { ...headers, Accept: 'text/event-stream' },
+          body,
+        });
+        const contentType = response.headers.get('Content-Type') ?? '';
+        if (!response.ok) {
+          // Server may have rejected before opening a stream (rate limit,
+          // bad payload, etc.) — body is JSON in that case.
+          const errPayload = await response.json().catch(() => ({}));
+          throw new Error(errPayload.error || 'Failed to get response');
+        }
+        if (contentType.includes('text/event-stream')) {
+          const assistantMessage = await consumeAgentStream(response);
+          setMessages((prev) => [...prev, assistantMessage]);
+          setStreamProgress(null);
+          captureEvent('chat_message_received', {
+            mode: 'chat',
+            streaming: true,
+            message_length: assistantMessage.content.length,
+            degraded: !!assistantMessage.isDegraded,
+            ...(assistantMessage.agentReview && { agent_review: true }),
+          });
+          if (
+            shouldSendToOutputViewer(assistantMessage.content, 'chat') &&
+            onOutputGenerated
+          ) {
+            onOutputGenerated(assistantMessage.content);
+            captureEvent('doc_generated', {
+              trigger: 'chat_request',
+              output_length: assistantMessage.content.length,
+            });
+          }
+          return;
+        }
+        // Server responded with JSON despite our stream:true (e.g. agents
+        // path disabled mid-flight). Fall through to the JSON handler
+        // below by reading the body and re-using the existing flow.
+        const data = await response.json();
+        const assistantMessage: Message = {
+          role: 'assistant',
+          content: data.message,
+          timestamp: new Date().toISOString(),
+          ...(data.degraded && { isDegraded: true }),
+          ...(data.degradation && { degradation: data.degradation }),
+          ...(data.agentReview && { agentReview: data.agentReview as AgentReview }),
+        };
+        setMessages((prev) => [...prev, assistantMessage]);
+        setStreamProgress(null);
+        captureEvent('chat_message_received', {
+          mode: 'chat',
+          streaming: false,
+          message_length: data.message?.length ?? 0,
+          degraded: !!data.degraded,
+        });
+        if (shouldSendToOutputViewer(data.message, 'chat') && onOutputGenerated) {
+          onOutputGenerated(data.message);
+          captureEvent('doc_generated', {
+            trigger: 'chat_request',
+            output_length: data.message.length,
+          });
+        }
+        return;
+      }
+
+      // ----- legacy non-streaming JSON path (unchanged) -----
       const response = await fetchWithTimeout(
         '/api/chat',
         {
           method: 'POST',
           headers,
-          body: JSON.stringify({
-            messages: [...messages, userMessage],
-            uploadedText: isRiMode ? undefined : (uploadedText || undefined),
-            mode: isRiMode ? 'ri_eviction' : 'chat',
-            intakeContext: isRiMode ? intakeContext : undefined,
-            handoffContext: !isRiMode ? sessionHandoff || undefined : undefined,
-          }),
+          body,
         },
         45_000,
       );
@@ -197,6 +424,7 @@ export default function ChatBox({
         timestamp: new Date().toISOString(),
         ...(data.degraded && { isDegraded: true }),
         ...(data.degradation && { degradation: data.degradation }),
+        ...(data.agentReview && { agentReview: data.agentReview as AgentReview }),
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -205,9 +433,10 @@ export default function ChatBox({
         mode: 'chat',
         message_length: data.message?.length ?? 0,
         degraded: !!data.degraded,
+        ...(typeof data.intent === 'string' && data.intent.length > 0 && { intent: data.intent }),
+        ...(data.agentReview && { agent_review: true }),
       });
 
-      // If response looks like generated content, pass it to output viewer
       if (shouldSendToOutputViewer(data.message, 'chat') && onOutputGenerated) {
         onOutputGenerated(data.message);
         captureEvent('doc_generated', {
@@ -229,9 +458,15 @@ export default function ChatBox({
           isError: true,
         },
       ]);
-      captureEvent('chat_error', { message: error.message, mode: 'chat', timeout: isTimeoutError(error) });
+      captureEvent('chat_error', {
+        message: error.message,
+        mode: 'chat',
+        timeout: isTimeoutError(error),
+        ...(useStreaming && { streaming: true }),
+      });
     } finally {
       setLoading(false);
+      setStreamProgress(null);
       onTypingChange?.(false);
     }
   };
@@ -290,6 +525,7 @@ export default function ChatBox({
         timestamp: new Date().toISOString(),
         ...(data.degraded && { isDegraded: true }),
         ...(data.degradation && { degradation: data.degradation }),
+        ...(data.agentReview && { agentReview: data.agentReview as AgentReview }),
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -374,52 +610,61 @@ export default function ChatBox({
       <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar bg-gray-50">
         {messages.map((message, index) => {
           const isErrorMsg = message.role === 'assistant' && message.isError;
+          const showAgentReview =
+            message.role === 'assistant' && !!message.agentReview && !isErrorMsg;
           return (
             <div
               key={index}
               className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
               <div
-                className={`max-w-[80%] rounded-lg px-4 py-3 ${
-                  message.role === 'user'
-                    ? 'bg-primary-600 text-white'
-                    : isErrorMsg
-                      ? 'bg-red-50 text-red-800 border border-red-200'
-                      : 'bg-white text-gray-800 shadow-sm border border-gray-200'
+                className={`flex max-w-[80%] flex-col gap-1 ${
+                  message.role === 'user' ? 'items-end' : 'items-start'
                 }`}
               >
-                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-                {message.isDegraded && (
-                  <p className="mt-1 text-xs text-amber-700">
-                    {message.degradation?.rag && !message.degradation?.llm
-                      ? 'Reference retrieval is temporarily limited; answers may be less grounded in local materials.'
-                      : message.degradation?.rag && message.degradation?.llm
-                        ? 'Ermi is in limited mode and reference retrieval is degraded.'
-                        : 'Ermi is running in limited mode right now.'}
-                  </p>
-                )}
-                {isErrorMsg && (
-                  <button
-                    type="button"
-                    className="mt-2 text-xs font-medium text-red-700 underline hover:text-red-900"
-                    onClick={() => {
-                      const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-                      if (lastUserMsg) {
-                        setMessages((prev) => prev.filter((_, i) => i !== index));
-                        void handleSendMessage(lastUserMsg.content);
-                      }
-                    }}
-                  >
-                    Try again
-                  </button>
-                )}
-                <p
-                  className={`text-xs mt-1 ${
-                    message.role === 'user' ? 'text-primary-100' : isErrorMsg ? 'text-red-400' : 'text-gray-400'
+                <div
+                  className={`rounded-lg px-4 py-3 ${
+                    message.role === 'user'
+                      ? 'bg-primary-600 text-white'
+                      : isErrorMsg
+                        ? 'bg-red-50 text-red-800 border border-red-200'
+                        : 'bg-white text-gray-800 shadow-sm border border-gray-200'
                   }`}
                 >
-                  {hasMounted ? new Date(message.timestamp).toLocaleTimeString() : '--:--'}
-                </p>
+                  <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                  {message.isDegraded && (
+                    <p className="mt-1 text-xs text-amber-700">
+                      {message.degradation?.rag && !message.degradation?.llm
+                        ? 'Reference retrieval is temporarily limited; answers may be less grounded in local materials.'
+                        : message.degradation?.rag && message.degradation?.llm
+                          ? 'Ermi is in limited mode and reference retrieval is degraded.'
+                          : 'Ermi is running in limited mode right now.'}
+                    </p>
+                  )}
+                  {isErrorMsg && (
+                    <button
+                      type="button"
+                      className="mt-2 text-xs font-medium text-red-700 underline hover:text-red-900"
+                      onClick={() => {
+                        const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+                        if (lastUserMsg) {
+                          setMessages((prev) => prev.filter((_, i) => i !== index));
+                          void handleSendMessage(lastUserMsg.content);
+                        }
+                      }}
+                    >
+                      Try again
+                    </button>
+                  )}
+                  <p
+                    className={`text-xs mt-1 ${
+                      message.role === 'user' ? 'text-primary-100' : isErrorMsg ? 'text-red-400' : 'text-gray-400'
+                    }`}
+                  >
+                    {hasMounted ? new Date(message.timestamp).toLocaleTimeString() : '--:--'}
+                  </p>
+                </div>
+                {showAgentReview && <AgentReviewPanel review={message.agentReview} />}
               </div>
             </div>
           );
@@ -427,13 +672,17 @@ export default function ChatBox({
         
         {loading && (
           <div className="flex justify-start">
-            <div className="bg-white text-gray-800 rounded-lg px-4 py-3 shadow-sm border border-gray-200">
-              <div className="flex gap-2">
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+            {streamProgress ? (
+              <AgentStreamProgress progress={streamProgress} />
+            ) : (
+              <div className="bg-white text-gray-800 rounded-lg px-4 py-3 shadow-sm border border-gray-200">
+                <div className="flex gap-2">
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
         

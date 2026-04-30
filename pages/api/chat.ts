@@ -8,10 +8,7 @@ import {
 import { EMBEDDED_MATERIALS } from '@/lib/ri/embeddedMaterials';
 import { supabaseAdmin } from '@/lib/supabaseClient';
 import { checkRateLimit, ipFromRequest } from '@/lib/rateLimit';
-import { embedText } from '@/lib/embeddings/openai';
-import { buildRetrievalContextBlock } from '@/lib/rag/buildRetrievalContext';
-import { createClient } from '@supabase/supabase-js';
-import { fetchWithTimeout, withRetry } from '@/lib/resilience';
+import { fetchWithTimeout } from '@/lib/resilience';
 import {
   createLogger,
   getClientTraceIdFromPagesApi,
@@ -28,6 +25,18 @@ import {
   circuitRecordSuccess,
   isRetryableUpstreamStatus,
 } from '@/lib/circuitBreaker';
+import { classifyIntent, type ChatIntent } from '@/lib/chat/intent';
+import { intentFallback, type FallbackReason } from '@/lib/chat/intentFallbacks';
+import { fetchRagContext } from '@/lib/agents/researchRag';
+import { getLawFirmGraph } from '@/lib/agents/graph';
+import { initialStateFrom, type LawFirmState } from '@/lib/agents/state';
+import {
+  AGENT_ORDER,
+  nodeNameToAgent,
+  serializeSseEvent,
+  type AgentName,
+  type StreamEvent,
+} from '@/lib/agents/streaming';
 
 type Message = {
   role: 'user' | 'assistant' | 'system';
@@ -40,46 +49,32 @@ function getRiMaterialsExcerpts(): string {
     .join('\n\n---\n\n');
 }
 
-async function fetchRagContext(
-  query: string,
-  requestId: string,
-): Promise<{ block: string; ragDegraded: boolean; ragCircuitOpen: boolean }> {
-  const name = CIRCUIT_NAMES.RAG_PIPELINE;
-  const cfg = CIRCUIT_CONFIG[name];
+// RAG context is fetched via the shared helper in `lib/agents/researchRag.ts`
+// so the legacy path and the LangGraph Research agent stay in lockstep.
 
-  if (circuitIsOpen(name, cfg)) {
-    createLogger(requestId).warn('rag_skipped_circuit_open', { feature: 'chat' });
-    return { block: '', ragDegraded: true, ragCircuitOpen: true };
-  }
-
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key || !process.env.OPENAI_API_KEY) {
-    return { block: '', ragDegraded: false, ragCircuitOpen: false };
-  }
-
-  try {
-    const block = await withRetry(
-      async () => {
-        const embedding = await embedText(query, { requestId });
-        const sb = createClient(url, key);
-        const { data, error } = await sb.rpc('match_legal_chunks', {
-          query_embedding: embedding,
-          match_count: 5,
-          filter_jurisdiction: 'RI',
-        });
-        if (error) throw new Error(error.message || 'match_legal_chunks');
-        if (!data?.length) return '';
-        return buildRetrievalContextBlock(data);
+/**
+ * Pulls structured citation rows back out of the formatted RAG block so the
+ * internal Agent Case Review panel can render them without re-querying.
+ * Mirrors the layout produced by `buildRetrievalContextBlock`.
+ */
+function parseAgentCitations(
+  block: string,
+): Array<{ index: number; title: string; source: string; topic?: string }> {
+  if (!block || typeof block !== 'string') return [];
+  return block.split(/\n\n---\n\n/).flatMap((sec, i) => {
+    const titleMatch = sec.match(/^Title:\s*(.+)$/m);
+    const topicMatch = sec.match(/^Topic:\s*(.+)$/m);
+    const sourceMatch = sec.match(/^Source:\s*(.+)$/m);
+    if (!titleMatch && !sourceMatch) return [];
+    return [
+      {
+        index: i + 1,
+        title: titleMatch?.[1].trim() ?? 'Untitled',
+        source: sourceMatch?.[1].trim() ?? 'Unknown source',
+        ...(topicMatch ? { topic: topicMatch[1].trim() } : {}),
       },
-      { maxAttempts: 2 },
-    );
-    circuitRecordSuccess(name, requestId);
-    return { block: block || '', ragDegraded: false, ragCircuitOpen: false };
-  } catch {
-    circuitRecordFailure(name, cfg, requestId);
-    return { block: '', ragDegraded: true, ragCircuitOpen: false };
-  }
+    ];
+  });
 }
 
 export default async function handler(
@@ -143,45 +138,432 @@ export default async function handler(
   }
 
   try {
-    const { messages, uploadedText, mode, intakeContext, handoffContext } = req.body as {
-      messages: Message[];
-      uploadedText?: string;
-      mode?: 'chat' | 'extract' | 'ri_eviction';
-      intakeContext?: RiIntakeContext | null;
-      /** Optional context from another tool (document prep, expungement summary, etc.). */
-      handoffContext?: string;
-    };
+    const { messages, uploadedText, mode, intakeContext, handoffContext, use_agents, stream } =
+      req.body as {
+        messages: Message[];
+        uploadedText?: string;
+        mode?: 'chat' | 'extract' | 'ri_eviction';
+        intakeContext?: RiIntakeContext | null;
+        /** Optional context from another tool (document prep, expungement summary, etc.). */
+        handoffContext?: string;
+        /** Per-request override for the LangGraph law-firm path (env: AGENTS_DEFAULT_ON). */
+        use_agents?: boolean;
+        /**
+         * When true AND the agents path is engaged, the response is streamed as
+         * Server-Sent Events (`text/event-stream`) with per-agent progress.
+         * Otherwise the normal JSON response is returned. See
+         * `lib/agents/streaming.ts` for the wire format.
+         */
+        stream?: boolean;
+      };
 
     if (!messages || !Array.isArray(messages)) {
       flow({ outcome: 'client_error', status_code: 400, user_id: userId });
       return res.status(400).json({ error: 'Messages array is required' });
     }
 
-    // Build context from last 5 messages (or 6 for ri_eviction to keep more context)
     const recentMessages = messages.slice(-(mode === 'ri_eviction' ? 6 : 5));
     const context = recentMessages
       .map((m) => `${m.role}: ${m.content}`)
       .join('\n');
 
-    // Determine system prompt based on mode
+    const userMessage = messages[messages.length - 1];
+    if (!userMessage || userMessage.role !== 'user') {
+      flow({
+        outcome: 'client_error',
+        status_code: 400,
+        user_id: userId,
+        chat_mode: mode,
+        message_count: recentMessages.length,
+      });
+      return res.status(400).json({ error: 'Last message must be from user' });
+    }
+
+    const log = createLogger(requestId);
+
+    const intentResult = classifyIntent(userMessage.content, {
+      hasIntake: !!intakeContext,
+    });
+    const intent: ChatIntent = intentResult.intent;
+    log.info('chat.intent_detected', {
+      feature: 'chat',
+      intent,
+      matched_pattern: intentResult.matchedPattern,
+      mode: mode ?? 'chat',
+      has_intake: !!intakeContext,
+    });
+
+    const respondWithFallback = async (
+      reason: FallbackReason,
+      opts?: { ragDegraded?: boolean; ragCircuitOpen?: boolean; aiProvider?: string },
+    ) => {
+      const text =
+        mode === 'extract'
+          ? "I'm in limited mode right now and can't fully process the uploaded document. Please try again in a moment, or paste the most important section into the chat and I'll do my best."
+          : intentFallback(intent, reason);
+      log.info('chat.fallback_used', { feature: 'chat', intent, reason });
+      const intentional =
+        reason === 'greeting_skipped' ||
+        reason === 'file_review_skipped' ||
+        reason === 'capability_skipped';
+      const degraded = !intentional;
+      flow({
+        outcome: 'success',
+        status_code: 200,
+        user_id: userId,
+        degraded_mode: degraded,
+        chat_mode: mode,
+        message_count: recentMessages.length,
+        ai_provider: opts?.aiProvider,
+      });
+      const degradation =
+        degraded || opts?.ragDegraded || opts?.ragCircuitOpen
+          ? {
+              llm: degraded,
+              rag: !!opts?.ragDegraded,
+              ...(opts?.ragCircuitOpen && { rag_circuit_open: true }),
+            }
+          : undefined;
+      return res.status(200).json({
+        message: text,
+        success: true,
+        intent,
+        ...(degraded && { degraded: true }),
+        ...(degradation && { degradation }),
+      });
+    };
+
+    if (
+      (mode === 'ri_eviction' || mode === 'chat') &&
+      intent === 'greeting'
+    ) {
+      return respondWithFallback('greeting_skipped');
+    }
+
+    if (
+      (mode === 'ri_eviction' || mode === 'chat') &&
+      intent === 'assistant_capabilities'
+    ) {
+      return respondWithFallback('capability_skipped');
+    }
+
+    if (
+      (mode === 'ri_eviction' || mode === 'chat') &&
+      intent === 'file_review' &&
+      !uploadedText
+    ) {
+      return respondWithFallback('file_review_skipped');
+    }
+
+    /**
+     * Feature-flagged six-agent LangGraph path. Runs only after the deterministic
+     * short-circuits (greeting / capability / file-review-no-upload) so those stay
+     * cheap and predictable. When this branch returns, the legacy linear path is
+     * skipped entirely. Set `AGENTS_DEFAULT_ON=true` for global rollout, or pass
+     * `use_agents: true` in the request body for per-call testing.
+     */
+    const useAgents =
+      use_agents === true || process.env.AGENTS_DEFAULT_ON === 'true';
+    if (useAgents && (mode === 'ri_eviction' || mode === 'chat')) {
+      log.info('chat.agents_path_entered', {
+        feature: 'agents',
+        intent,
+        mode: mode ?? 'chat',
+        stream: stream === true,
+      });
+      const initial = initialStateFrom({
+        requestId,
+        clientTraceId,
+        mode,
+        intent,
+        recentMessages: recentMessages.map((m) => ({
+          role: m.role === 'assistant' ? 'assistant' : 'user',
+          content: m.content,
+        })),
+        userMessage: userMessage.content,
+        uploadedText,
+        intakeContext: intakeContext ?? null,
+        handoffContext,
+      });
+
+      /**
+       * Build the same `agentReview` payload shape that the JSON path returns,
+       * so streaming clients get the same forensic detail in the `final` event
+       * as non-streaming clients get in the JSON body.
+       */
+      const buildAgentReview = (out: Partial<LawFirmState>) => {
+        const ragBlock = out.research?.ragBlock ?? '';
+        return {
+          intent,
+          mode: (mode === 'ri_eviction' ? 'ri_eviction' : 'chat') as 'ri_eviction' | 'chat',
+          usedProvider: out.usedProvider ?? null,
+          degraded: out.degraded === true,
+          degradation:
+            out.degradation && Object.keys(out.degradation).length > 0
+              ? out.degradation
+              : undefined,
+          facts: out.facts,
+          research: out.research
+            ? {
+                ragMatchCount: out.research.ragMatchCount,
+                degraded: out.research.degraded,
+                reason: out.research.reason,
+                citations: parseAgentCitations(ragBlock),
+                ragBlockExcerpt: ragBlock ? ragBlock.slice(0, 600) : undefined,
+              }
+            : undefined,
+          analysis: out.analysis,
+          draft: out.draft,
+          strategy: out.strategy,
+          safety: out.safety,
+        };
+      };
+
+      // ----- streaming branch (SSE) -----
+      if (stream === true) {
+        try {
+          res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-cache, no-transform');
+          res.setHeader('Connection', 'keep-alive');
+          // Disable proxy buffering (nginx in front of Vercel respects this).
+          res.setHeader('X-Accel-Buffering', 'no');
+          res.flushHeaders?.();
+
+          const send = (event: StreamEvent) => {
+            res.write(serializeSseEvent(event));
+          };
+
+          /**
+           * Track per-agent timing. We approximate "started" as "the previous
+           * agent in the canonical order finished" because LangGraph only
+           * emits node-end events. For the first agent, started = stream open.
+           */
+          const agentStartTs = new Map<AgentName, number>();
+          let lastFinishedTs = Date.now();
+
+          /**
+           * Manually accumulate state from `streamMode: 'updates'` so we can
+           * build the final payload without a second graph invocation. This
+           * works because no agent's update writes `undefined` for a field
+           * that a previous agent set.
+           */
+          const accumulated: Record<string, unknown> = {
+            ...(initial as Record<string, unknown>),
+          };
+          const seenAgents = new Set<AgentName>();
+
+          const lawGraph = getLawFirmGraph();
+          const updates = await lawGraph.stream(initial, {
+            configurable: { request_id: requestId },
+            streamMode: 'updates',
+          });
+
+          for await (const chunk of updates) {
+            // chunk is { nodeName: partialUpdate }
+            for (const [nodeName, partialUnknown] of Object.entries(
+              chunk as Record<string, Record<string, unknown>>,
+            )) {
+              const agent = nodeNameToAgent(nodeName);
+              if (!agent) continue;
+              const partial = partialUnknown ?? {};
+              for (const [k, v] of Object.entries(partial)) {
+                if (v !== undefined) accumulated[k] = v;
+              }
+              const now = Date.now();
+              const startedAt = agentStartTs.get(agent) ?? lastFinishedTs;
+              const outcome =
+                (accumulated.degraded === true && !seenAgents.has(agent)) ||
+                ('degraded' in partial && partial.degraded === true)
+                  ? 'degraded'
+                  : 'ok';
+              send({
+                type: 'agent_finished',
+                agent,
+                outcome,
+                duration_ms: Math.max(0, now - startedAt),
+              });
+              seenAgents.add(agent);
+              lastFinishedTs = now;
+            }
+          }
+
+          // If Document was skipped via the conditional edge (recommendation
+          // !== 'draft'), tell the client explicitly so the stepper can mark
+          // it gray instead of leaving it spinning forever.
+          if (!seenAgents.has('document')) {
+            send({
+              type: 'agent_skipped',
+              agent: 'document',
+              reason: 'analysis_recommendation_not_draft',
+            });
+          }
+
+          const finalState = accumulated as Partial<LawFirmState>;
+          const finalMessage =
+            finalState.finalMessage && finalState.finalMessage.trim().length > 0
+              ? finalState.finalMessage
+              : intentFallback(intent, 'llm_unavailable');
+          const degradation =
+            finalState.degradation && Object.keys(finalState.degradation).length > 0
+              ? finalState.degradation
+              : undefined;
+
+          send({
+            type: 'final',
+            message: finalMessage,
+            intent,
+            ...(finalState.degraded === true && { degraded: true }),
+            ...(degradation && { degradation }),
+            agentReview: buildAgentReview(finalState),
+          });
+          res.end();
+
+          flow({
+            outcome: 'success',
+            status_code: 200,
+            user_id: userId,
+            degraded_mode: finalState.degraded === true,
+            chat_mode: mode,
+            message_count: recentMessages.length,
+            ai_provider: finalState.usedProvider ?? undefined,
+          });
+          return;
+        } catch (graphErr) {
+          log.error('chat.agents_stream_failed', {
+            feature: 'agents',
+            intent,
+            ...serializeErrorSafe(graphErr),
+          });
+          // Headers may already be sent; emit a terminal SSE error event if
+          // the response is still writable, otherwise fall through to the
+          // legacy fallback (which can't write JSON over an SSE response).
+          if (!res.writableEnded) {
+            try {
+              res.write(
+                serializeSseEvent({
+                  type: 'error',
+                  reason: 'graph_failed',
+                  fallbackMessage: intentFallback(intent, 'llm_unavailable'),
+                }),
+              );
+              res.end();
+              flow({
+                outcome: 'success',
+                status_code: 200,
+                user_id: userId,
+                degraded_mode: true,
+                chat_mode: mode,
+                message_count: recentMessages.length,
+              });
+              return;
+            } catch {
+              // headers/body already torn down; nothing more to do
+              return;
+            }
+          }
+          return;
+        }
+      }
+
+      // ----- non-streaming branch (existing JSON behavior) -----
+      try {
+        const out = await getLawFirmGraph().invoke(initial, {
+          configurable: { request_id: requestId },
+        });
+        const finalMessage =
+          out.finalMessage && out.finalMessage.trim().length > 0
+            ? out.finalMessage
+            : intentFallback(intent, 'llm_unavailable');
+        const degradation =
+          out.degradation && Object.keys(out.degradation).length > 0
+            ? out.degradation
+            : undefined;
+        const agentReview = buildAgentReview(out);
+
+        flow({
+          outcome: 'success',
+          status_code: 200,
+          user_id: userId,
+          degraded_mode: out.degraded === true,
+          chat_mode: mode,
+          message_count: recentMessages.length,
+          ai_provider: out.usedProvider ?? undefined,
+        });
+        return res.status(200).json({
+          message: finalMessage,
+          success: true,
+          intent,
+          ...(out.degraded === true && { degraded: true }),
+          ...(degradation && { degradation }),
+          agentReview,
+        });
+      } catch (graphErr) {
+        log.error('chat.agents_path_failed', {
+          feature: 'agents',
+          intent,
+          ...serializeErrorSafe(graphErr),
+        });
+        return respondWithFallback('llm_unavailable');
+      }
+    }
+
+    /** Use RI eviction system prompt + materials for dedicated mode or legacy chat on substantive RI intents. */
+    const useRiEvictionPrompt =
+      mode === 'ri_eviction' ||
+      (mode === 'chat' &&
+        (intent === 'lockout' ||
+          intent === 'notice_explanation' ||
+          intent === 'help_desk_prep' ||
+          intent === 'intake_summary'));
+
     let systemPrompt: string;
     let ragDegraded = false;
     let ragCircuitOpen = false;
-    if (mode === 'ri_eviction') {
+
+    const useRag =
+      mode !== 'extract' &&
+      intent !== 'greeting' &&
+      intent !== 'file_review' &&
+      intent !== 'assistant_capabilities';
+
+    let ragBlock = '';
+    if (useRag) {
+      const ragOutcome = await fetchRagContext(userMessage.content, requestId);
+      if (ragOutcome.kind === 'found') {
+        ragBlock = ragOutcome.block;
+        log.info('chat.rag_context_found', {
+          feature: 'chat',
+          intent,
+          match_count: ragOutcome.matchCount,
+        });
+      } else {
+        ragDegraded = ragOutcome.degraded;
+        ragCircuitOpen = ragOutcome.circuitOpen;
+        log.info('chat.rag_context_missing', {
+          feature: 'chat',
+          intent,
+          reason: ragOutcome.reason,
+        });
+      }
+    }
+
+    if (useRiEvictionPrompt) {
       const riExcerpts = getRiMaterialsExcerpts();
-      const contextPayload = buildRiEvictionContextPayload(intakeContext ?? null, riExcerpts);
+      const contextPayload = buildRiEvictionContextPayload(
+        intakeContext ?? null,
+        riExcerpts,
+        intent,
+      );
       systemPrompt = `${RI_EVICTION_SYSTEM_PROMPT}\n\n${contextPayload}`;
+      if (ragBlock) {
+        systemPrompt += `\n\n---\nRetrieved Rhode Island legal guidance (use this to ground your response):\n${ragBlock}`;
+      }
     } else if (mode === 'extract' && uploadedText) {
       systemPrompt = extractionPrompt(uploadedText);
     } else {
       systemPrompt = intakePrompt(context, uploadedText);
-
-      const lastUserContent = messages[messages.length - 1]?.content ?? '';
-      const rag = await fetchRagContext(lastUserContent, requestId);
-      ragDegraded = rag.ragDegraded;
-      ragCircuitOpen = rag.ragCircuitOpen;
-      if (rag.block) {
-        systemPrompt += `\n\n---\nRetrieved legal guidance (use this to ground your response):\n${rag.block}`;
+      if (ragBlock) {
+        systemPrompt += `\n\n---\nRetrieved legal guidance (use this to ground your response):\n${ragBlock}`;
       }
     }
 
@@ -195,137 +577,149 @@ export default async function handler(
       systemPrompt += `\n\n---\nContext the user brought from another SmartProBono screen (they may refer to this):\n${capped}`;
     }
 
-    // Get the latest user message
-    const userMessage = messages[messages.length - 1];
-    if (!userMessage || userMessage.role !== 'user') {
-      flow({
-        outcome: 'client_error',
-        status_code: 400,
-        user_id: userId,
-        chat_mode: mode,
-        message_count: recentMessages.length,
-      });
-      return res.status(400).json({ error: 'Last message must be from user' });
-    }
-
-    const aiProvider = process.env.AI_PROVIDER || 'huggingface';
-
-    let responseText: string;
-    let llmDegraded = false;
-
-    if (aiProvider === 'huggingface') {
-      const hfName = CIRCUIT_NAMES.HUGGINGFACE_LLM;
-      const hfCfg = CIRCUIT_CONFIG[hfName];
-      try {
-        if (circuitIsOpen(hfName, hfCfg)) {
-          responseText = generateFallbackResponse(userMessage.content, mode);
-          llmDegraded = true;
-        } else {
-          const hfResponse = await fetchWithTimeout(
-            'https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium',
-            {
-              headers: {
-                Authorization: `Bearer ${process.env.HUGGINGFACE_API_KEY || 'hf_demo_token'}`,
-                'Content-Type': 'application/json',
-              },
-              method: 'POST',
-              body: JSON.stringify({
-                inputs: `${systemPrompt}\n\nUser: ${userMessage.content}\nErmi:`,
-                parameters: {
-                  max_new_tokens: 200,
-                  temperature: 0.7,
-                  return_full_text: false,
-                },
-              }),
-            },
-            15_000,
-          );
-
-          if (!hfResponse.ok) {
-            if (isRetryableUpstreamStatus(hfResponse.status)) {
-              circuitRecordFailure(hfName, hfCfg, requestId);
-            }
-            responseText = generateFallbackResponse(userMessage.content, mode);
-            llmDegraded = true;
-          } else {
-            const hfData = await hfResponse.json();
-            responseText =
-              hfData[0]?.generated_text ||
-              'I apologize, but I need a moment to process that. Could you try rephrasing your question?';
-            if (!hfData[0]?.generated_text) llmDegraded = true;
-            else circuitRecordSuccess(hfName, requestId);
-          }
-        }
-      } catch {
-        circuitRecordFailure(hfName, hfCfg, requestId);
-        responseText = generateFallbackResponse(userMessage.content, mode);
-        llmDegraded = true;
-      }
-    } else if (aiProvider === 'groq') {
+    const tryGroq = async (): Promise<string | null> => {
+      const apiKey = process.env.GROQ_API_KEY;
+      if (!apiKey || apiKey.trim() === '') return null;
       const gqName = CIRCUIT_NAMES.GROQ_LLM;
       const gqCfg = CIRCUIT_CONFIG[gqName];
-      if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY.trim() === '') {
-        responseText = generateFallbackResponse(userMessage.content, mode);
-        llmDegraded = true;
-      } else {
-        try {
-          if (circuitIsOpen(gqName, gqCfg)) {
-            responseText = generateFallbackResponse(userMessage.content, mode);
-            llmDegraded = true;
-          } else {
-            const groqResponse = await fetchWithTimeout(
-              'https://api.groq.com/openai/v1/chat/completions',
-              {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-                },
-                body: JSON.stringify({
-                  model: 'llama-3.3-70b-versatile',
-                  messages: [
-                    { role: 'system', content: systemPrompt },
-                    ...recentMessages.slice(0, -1).map((msg) => ({ role: msg.role, content: msg.content })),
-                    { role: 'user', content: userMessage.content },
-                  ],
-                  temperature: 0.7,
-                  max_tokens: 2000,
-                }),
-              },
-              30_000,
-            );
-
-            if (!groqResponse.ok) {
-              if (isRetryableUpstreamStatus(groqResponse.status)) {
-                circuitRecordFailure(gqName, gqCfg, requestId);
-              }
-              responseText = generateFallbackResponse(userMessage.content, mode);
-              llmDegraded = true;
-            } else {
-              const groqData = await groqResponse.json();
-              const aiResponse = groqData.choices?.[0]?.message?.content;
-
-              if (!aiResponse || aiResponse.trim().length === 0) {
-                responseText = generateFallbackResponse(userMessage.content, mode);
-                llmDegraded = true;
-              } else {
-                responseText = aiResponse;
-                circuitRecordSuccess(gqName, requestId);
-              }
-            }
-          }
-        } catch {
-          circuitRecordFailure(gqName, gqCfg, requestId);
-          responseText = generateFallbackResponse(userMessage.content, mode);
-          llmDegraded = true;
-        }
+      if (circuitIsOpen(gqName, gqCfg)) {
+        log.warn('chat.llm_skipped', {
+          feature: 'chat',
+          intent,
+          provider: 'groq',
+          reason: 'circuit_open',
+        });
+        return null;
       }
-    } else {
-      responseText = generateFallbackResponse(userMessage.content, mode);
-      llmDegraded = true;
+      log.info('chat.llm_called', { feature: 'chat', provider: 'groq', attempt: 1, intent });
+      try {
+        const groqResponse = await fetchWithTimeout(
+          'https://api.groq.com/openai/v1/chat/completions',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              model: 'llama-3.3-70b-versatile',
+              messages: [
+                { role: 'system', content: systemPrompt },
+                ...recentMessages
+                  .slice(0, -1)
+                  .map((msg) => ({ role: msg.role, content: msg.content })),
+                { role: 'user', content: userMessage.content },
+              ],
+              temperature: 0.7,
+              max_tokens: 2000,
+            }),
+          },
+          30_000,
+        );
+        if (!groqResponse.ok) {
+          if (isRetryableUpstreamStatus(groqResponse.status)) {
+            circuitRecordFailure(gqName, gqCfg, requestId);
+          }
+          return null;
+        }
+        const groqData = await groqResponse.json();
+        const aiResponse = groqData.choices?.[0]?.message?.content;
+        if (!aiResponse || aiResponse.trim().length === 0) return null;
+        circuitRecordSuccess(gqName, requestId);
+        return aiResponse;
+      } catch {
+        circuitRecordFailure(gqName, gqCfg, requestId);
+        return null;
+      }
+    };
+
+    const tryHuggingFace = async (): Promise<string | null> => {
+      const apiKey = process.env.HUGGINGFACE_API_KEY;
+      if (!apiKey || apiKey.trim() === '' || apiKey === 'hf_demo_token') return null;
+      const hfName = CIRCUIT_NAMES.HUGGINGFACE_LLM;
+      const hfCfg = CIRCUIT_CONFIG[hfName];
+      if (circuitIsOpen(hfName, hfCfg)) {
+        log.warn('chat.llm_skipped', {
+          feature: 'chat',
+          intent,
+          provider: 'huggingface',
+          reason: 'circuit_open',
+        });
+        return null;
+      }
+      log.info('chat.llm_called', { feature: 'chat', provider: 'huggingface', attempt: 1, intent });
+      try {
+        const hfResponse = await fetchWithTimeout(
+          'https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium',
+          {
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+            },
+            method: 'POST',
+            body: JSON.stringify({
+              inputs: `${systemPrompt}\n\nUser: ${userMessage.content}\nErmi:`,
+              parameters: {
+                max_new_tokens: 200,
+                temperature: 0.7,
+                return_full_text: false,
+              },
+            }),
+          },
+          15_000,
+        );
+        if (!hfResponse.ok) {
+          if (isRetryableUpstreamStatus(hfResponse.status)) {
+            circuitRecordFailure(hfName, hfCfg, requestId);
+          }
+          return null;
+        }
+        const hfData = await hfResponse.json();
+        const text = hfData[0]?.generated_text;
+        if (!text || (typeof text === 'string' && text.trim().length === 0)) return null;
+        circuitRecordSuccess(hfName, requestId);
+        return text;
+      } catch {
+        circuitRecordFailure(hfName, hfCfg, requestId);
+        return null;
+      }
+    };
+
+    const envProvider = (process.env.AI_PROVIDER || '').toLowerCase();
+    const order: Array<'groq' | 'huggingface'> =
+      envProvider === 'huggingface' ? ['huggingface', 'groq'] : ['groq', 'huggingface'];
+
+    let responseText: string | null = null;
+    let usedProvider: 'groq' | 'huggingface' | null = null;
+    for (const provider of order) {
+      const text = provider === 'groq' ? await tryGroq() : await tryHuggingFace();
+      if (text && text.trim().length > 0) {
+        responseText = text;
+        usedProvider = provider;
+        break;
+      }
     }
 
-    const degraded = llmDegraded || ragDegraded;
+    if (!responseText) {
+      const hasGroq = !!process.env.GROQ_API_KEY?.trim();
+      const hasHf =
+        !!process.env.HUGGINGFACE_API_KEY?.trim() &&
+        process.env.HUGGINGFACE_API_KEY !== 'hf_demo_token';
+      const gqCfg = CIRCUIT_CONFIG[CIRCUIT_NAMES.GROQ_LLM];
+      const hfCfg = CIRCUIT_CONFIG[CIRCUIT_NAMES.HUGGINGFACE_LLM];
+      const bothCircuitsOpen =
+        hasGroq &&
+        hasHf &&
+        circuitIsOpen(CIRCUIT_NAMES.GROQ_LLM, gqCfg) &&
+        circuitIsOpen(CIRCUIT_NAMES.HUGGINGFACE_LLM, hfCfg);
+      let reason: FallbackReason;
+      if (!hasGroq && !hasHf) reason = 'no_provider';
+      else if (bothCircuitsOpen) reason = 'circuit_open';
+      else reason = 'llm_unavailable';
+      return respondWithFallback(reason, { ragDegraded, ragCircuitOpen });
+    }
+
+    const degraded = ragDegraded;
 
     // Save conversation to Supabase ONLY if user is authenticated with valid token
     // Demo mode (no auth) should NEVER save to database
@@ -399,21 +793,21 @@ export default async function handler(
       degraded_mode: degraded,
       chat_mode: mode,
       message_count: recentMessages.length,
-      ai_provider: aiProvider,
+      ai_provider: usedProvider ?? undefined,
     });
 
-    const degradation =
-      llmDegraded || ragDegraded
-        ? {
-            llm: llmDegraded,
-            rag: ragDegraded,
-            ...(ragCircuitOpen && { rag_circuit_open: true }),
-          }
-        : undefined;
+    const degradation = ragDegraded
+      ? {
+          llm: false,
+          rag: true,
+          ...(ragCircuitOpen && { rag_circuit_open: true }),
+        }
+      : undefined;
 
     return res.status(200).json({
       message: responseText,
       success: true,
+      intent,
       ...(degraded && { degraded: true }),
       ...(degradation && { degradation }),
     });
@@ -426,55 +820,3 @@ export default async function handler(
     });
   }
 }
-
-// Simple fallback responses when AI isn't available
-function generateFallbackResponse(userMessage: string, mode?: string): string {
-
-  if (mode === 'ri_eviction') {
-    return `Explanation:
-Based on Rhode Island landlord-tenant law, eviction-related questions depend on your specific situation. The Rhode Island Landlord-Tenant Handbook and Eviction Help Desk materials provide guidance on notices, court process, and tenant rights.
-
-Next steps:
-- Bring any eviction notice, payment records, and communication with your landlord to the Eviction Help Desk
-- Do not ignore court papers; plan to attend any scheduled hearing
-- If you have a housing subsidy, bring subsidy paperwork and contact info
-
-Source basis:
-- Rhode Island Landlord-Tenant Handbook 2024
-- Eviction Help Desk Intake Form
-
-Staff review note:
-This is informational guidance only. Eviction Help Desk staff or an attorney should review your situation before you rely on next steps.`;
-  }
-  
-  if (mode === 'extract') {
-    return "I've reviewed your document. Here are the key details I've identified:\n\n• Client information\n• Case type\n• Important dates\n\nWould you like me to generate a draft document based on this information?";
-  }
-  
-  if (userMessage.toLowerCase().includes('letter') || userMessage.toLowerCase().includes('draft')) {
-    return "I'd be happy to help draft a letter! Please provide the key details like client name, case type, and any specific instructions you have.";
-  }
-  
-  if (userMessage.toLowerCase().includes('intake') || userMessage.toLowerCase().includes('form')) {
-    return "I can help process intake forms. Please share the information, and I'll extract the key facts and organize them for you.";
-  }
-  
-  if (userMessage.toLowerCase().includes('nda') || userMessage.toLowerCase().includes('agreement')) {
-    return "I can help draft an NDA or agreement. Please provide the key details like parties involved, confidential information scope, and duration.";
-  }
-  
-  if (userMessage.toLowerCase().includes('review') || userMessage.toLowerCase().includes('look')) {
-    return "I'd be happy to review your document. Please share the content or upload the file, and I'll extract the key legal facts and organize them for you.";
-  }
-  
-  // Default responses
-  const responses = [
-    "I'm here to help with your legal document needs! What specific type of document are you working on?",
-    "I can help with intake forms, letters, agreements, and other legal documents. What would you like me to assist with?",
-    "Let me know what you're working on - whether it's reviewing an intake, drafting a letter, or organizing case information.",
-    "I'm ready to help! Tell me about your case or document needs, and I'll provide specific assistance.",
-  ];
-  
-  return responses[Math.floor(Math.random() * responses.length)];
-}
-

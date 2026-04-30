@@ -3,6 +3,8 @@
  * Used when mode === 'ri_eviction' in the chat API.
  */
 
+import type { ChatIntent } from '@/lib/chat/intent';
+
 export type RiIntakeContext = {
   summary?: string;
   category?: string;
@@ -55,9 +57,20 @@ Staff review note:
 
 export function buildRiEvictionContextPayload(
   intakeContext: RiIntakeContext | null,
-  riMaterialsExcerpts: string
+  riMaterialsExcerpts: string,
+  intent?: ChatIntent
 ): string {
   const parts: string[] = ['Mode: RI eviction assistant'];
+
+  if (
+    intent &&
+    intent !== 'unknown' &&
+    intent !== 'assistant_capabilities'
+  ) {
+    parts.push(
+      `\nDetected user intent: ${intent}. Answer this intent directly using the provided Rhode Island materials. Do not pivot to a different topic.`
+    );
+  }
 
   if (intakeContext) {
     if (intakeContext.summary) {
