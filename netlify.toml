@@ -1,15 +1,15 @@
+# Next.js App Router on Netlify — use the official runtime plugin.
+# Do NOT add SPA fallback redirects (/* → /index.html); they break server-rendered routes
+# like /pocketbuddy/*.
+
 [build]
   command = "npm run build"
-  publish = ".next"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
 
 [build.environment]
-  NODE_VERSION = "18"
-
-# Handle client-side routing
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
+  NODE_VERSION = "20"
 
 [context.production.environment]
   NODE_ENV = "production"
