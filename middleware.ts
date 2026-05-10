@@ -6,6 +6,26 @@ const PROTECTED_ROUTES = ['/dashboard'];
 const INTERNAL_PREFIX = '/internal';
 const ADMIN_EMAILS = getAdminEmailsFromEnv();
 
+/** Edge-safe user lookup — avoids @supabase/supabase-js (uses Node APIs banned on Edge). */
+async function fetchSupabaseUserEmail(sbUrl: string, apiKey: string, accessToken: string): Promise<string | null> {
+  const base = sbUrl.replace(/\/$/, '');
+  const res = await fetch(`${base}/auth/v1/user`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      apikey: apiKey,
+    },
+    cache: 'no-store',
+  });
+  if (!res.ok) return null;
+  try {
+    const body = (await res.json()) as { email?: unknown };
+    return typeof body.email === 'string' ? body.email.trim().toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 function getToken(request: NextRequest, sbUrl: string): string | undefined {
   return (
     request.cookies.get('sb-access-token')?.value ??
@@ -48,15 +68,16 @@ export async function middleware(request: NextRequest) {
 
   if (isInternal) {
     if (ADMIN_EMAILS.length > 0) {
-      const { createClient } = await import('@supabase/supabase-js');
-      const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-      if (!serviceKey) {
+      const authApiKey =
+        process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+      if (!authApiKey) {
         return new NextResponse('Forbidden', { status: 403 });
       }
+
       try {
-        const sb = createClient(sbUrl, serviceKey);
-        const { data: { user } } = await sb.auth.getUser(token);
-        const email = user?.email?.toLowerCase();
+        const email = await fetchSupabaseUserEmail(sbUrl, authApiKey, token);
         if (!email || !ADMIN_EMAILS.includes(email)) {
           return new NextResponse('Forbidden', { status: 403 });
         }
@@ -72,5 +93,13 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/upgrade/:path*', '/for-lawyers/:path*', '/api/:path*', '/internal/:path*'],
+  matcher: [
+    '/dashboard/:path*',
+    '/upgrade/:path*',
+    '/for-lawyers/:path*',
+    '/for-legal-teams',
+    '/for-legal-teams/:path*',
+    '/api/:path*',
+    '/internal/:path*',
+  ],
 };

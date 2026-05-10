@@ -10,6 +10,9 @@
 
 [build.environment]
   NODE_VERSION = "20"
+  # Install devDependencies during `npm ci` / `npm install` even when NODE_ENV=production
+  # (Netlify production sets NODE_ENV=production, which otherwise skips @types/react, etc.).
+  NPM_CONFIG_PRODUCTION = "false"
 
 [context.production.environment]
   NODE_ENV = "production"
