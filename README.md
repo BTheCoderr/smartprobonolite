@@ -1,5 +1,11 @@
 # SmartProBono Lite ⚖️
 
+<!-- repo-intro:start -->
+**Project snapshot:** SmartProBono Lite is a focused legal-help product prototype that combines plain-English guidance, Ermi-assisted drafting, downloadable outputs, public tools, and authenticated pilot workflows.
+
+**What it demonstrates:** Next.js · AI-assisted legal workflows · Supabase/RLS · document generation · pilot-product design.
+<!-- repo-intro:end -->
+
 **Plain-English legal help and guided legal action**
 
 SmartProBono Lite is a Next.js app that helps people understand documents, chat with Ermi for next steps and drafts, generate downloadable output, and follow guided workflows (including DIY record-clearing prep and a Rhode Island eviction pilot). Attorneys can use the authenticated dashboard for persistent intake and drafts.
